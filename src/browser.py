@@ -162,6 +162,7 @@ class BrowserManager:
     def _bypass_cloudflare(self, timeout: int = 120) -> bool:
         """
         Bypass Cloudflare Turnstile challenge by trying CDP clicks at multiple viewport positions.
+        In visible mode, records manual click coordinates for future use in headless mode.
         
         Returns True if bypassed, False otherwise
         """
@@ -190,6 +191,39 @@ class BrowserManager:
         if success_check():
             logging.info("✓ Turnstile already bypassed!")
             return True
+        
+        # Check if we have saved click coordinates
+        saved_coords = self._load_saved_click_coords()
+        if saved_coords:
+            logging.info(f"Using saved click coordinates: ({saved_coords['x']}, {saved_coords['y']})")
+            try:
+                self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                    "type": "mouseMoved",
+                    "x": float(saved_coords['x']),
+                    "y": float(saved_coords['y'])
+                })
+                self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                    "type": "mousePressed",
+                    "x": float(saved_coords['x']),
+                    "y": float(saved_coords['y']),
+                    "button": "left",
+                    "buttons": 1,
+                    "clickCount": 1
+                })
+                self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                    "type": "mouseReleased",
+                    "x": float(saved_coords['x']),
+                    "y": float(saved_coords['y']),
+                    "button": "left",
+                    "buttons": 1,
+                    "clickCount": 1
+                })
+                time.sleep(2)
+                if success_check():
+                    logging.info("✓ Turnstile bypassed using saved coordinates!")
+                    return True
+            except Exception as e:
+                logging.debug(f"Saved coordinates failed: {e}")
         
         # Try clicks at multiple vertical offsets from center
         offsets_percent = [0.02, 0.04, 0.06, 0.08, 0.10]
@@ -236,17 +270,80 @@ class BrowserManager:
                     return True
                 time.sleep(0.5)
         
-        # Auto-clicks didn't work - wait for manual intervention
-        logging.info("⚠️ Auto-clicks didn't work - please click Turnstile manually...")
-        
-        timeout_manual = time.time() + timeout
-        while time.time() < timeout_manual:
+        # Auto-clicks didn't work - wait for manual intervention (visible mode only)
+        headless = self.config.get('browser', 'headless') or False
+        if not headless:
+            logging.info("⚠️ Auto-clicks didn't work - please click Turnstile manually...")
+            logging.info("📝 Recording your click coordinates for future headless use...")
+            
+            # Set up click recording
+            click_recorded = {'x': None, 'y': None, 'recorded': False}
+            
+            def record_click(x, y):
+                click_recorded['x'] = x
+                click_recorded['y'] = y
+                click_recorded['recorded'] = True
+                logging.info(f"📝 Recorded click at: ({x}, {y})")
+                self._save_click_coords(x, y)
+            
+            # Inject JavaScript to record clicks
+            self.driver.execute_script("""
+                window._recordClick = function(x, y) {
+                    window._lastClickX = x;
+                    window._lastClickY = y;
+                };
+                
+                document.addEventListener('click', function(e) {
+                    window._recordClick(e.clientX, e.clientY);
+                }, true);
+            """)
+            
+            timeout_manual = time.time() + timeout
+            while time.time() < timeout_manual:
+                if success_check():
+                    # Check if we recorded a click
+                    try:
+                        click_x = self.driver.execute_script("return window._lastClickX;")
+                        click_y = self.driver.execute_script("return window._lastClickY;")
+                        if click_x and click_y:
+                            logging.info(f"📝 Recorded manual click at: ({click_x}, {click_y})")
+                            self._save_click_coords(click_x, click_y)
+                    except Exception:
+                        pass
+                    logging.info("✓ Turnstile bypassed (manual click)!")
+                    return True
+                time.sleep(0.5)
+        else:
+            # Headless mode - just wait a bit more
+            logging.info("⚠️ Auto-clicks didn't work in headless mode")
+            time.sleep(5)
             if success_check():
-                logging.info("✓ Turnstile bypassed (manual click)!")
                 return True
-            time.sleep(0.5)
         
         return False
+    
+    def _save_click_coords(self, x, y):
+        """Save click coordinates to config file"""
+        try:
+            import json
+            coords_file = os.path.expanduser("~/.perplexity-click-coords.json")
+            with open(coords_file, 'w') as f:
+                json.dump({'x': float(x), 'y': float(y)}, f)
+            logging.info(f"💾 Saved click coordinates to {coords_file}")
+        except Exception as e:
+            logging.debug(f"Failed to save coordinates: {e}")
+    
+    def _load_saved_click_coords(self):
+        """Load saved click coordinates"""
+        try:
+            import json
+            coords_file = os.path.expanduser("~/.perplexity-click-coords.json")
+            if os.path.exists(coords_file):
+                with open(coords_file, 'r') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return None
         
     def check_login(self):
         """

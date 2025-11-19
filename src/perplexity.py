@@ -19,6 +19,10 @@ logging.getLogger('selenium').setLevel(logging.WARNING)
 logging.getLogger('undetected_chromedriver').setLevel(logging.WARNING)
 logging.getLogger('urllib3').setLevel(logging.WARNING)
 
+# Set up our logger
+_logger = logging.getLogger(__name__)
+_logger.setLevel(logging.INFO)  # Default to INFO level
+
 
 # Module-level browser instance for persistence
 _browser_manager = None
@@ -107,7 +111,7 @@ def _ensure_logged_in(config):
     raise Exception("Login timeout: Please log in manually and try again")
 
 
-def ask_plexi(question, model=None, reasoning=None, config=None, debug=False):
+def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, headless=None):
     """
     Ask a question to Perplexity.ai and return the response
     
@@ -117,16 +121,25 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False):
         reasoning (bool, optional): Enable reasoning mode (default: True)
         config: Configuration object. If None, loads from config.json
         debug (bool): Enable debug logging (default: False)
+        headless (bool, optional): Override headless mode from config (default: None, uses config)
     
     Returns:
         str: The response text from Perplexity.ai
     """
     # Set logging level based on debug flag
-    logger = logging.getLogger(__name__)
     if debug:
-        logger.setLevel(logging.DEBUG)
+        _logger.setLevel(logging.DEBUG)
+        logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
     else:
-        logger.setLevel(logging.INFO)
+        _logger.setLevel(logging.INFO)
+        logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    
+    # Override headless mode if provided
+    if headless is not None:
+        if config is None:
+            from .config import load_config
+            config = load_config()
+        config._config['browser']['headless'] = headless
     # Load config if not provided
     if config is None:
         from .config import load_config
@@ -141,52 +154,136 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False):
             reasoning = True
     
     # Ensure browser is started
+    logging.info("Starting browser...")
     driver = _ensure_browser_started(config)
+    logging.info("✓ Browser started")
     
     # Ensure logged in
+    logging.info("Checking login status...")
     _ensure_logged_in(config)
+    logging.info("✓ Logged in")
     
     # Navigate to Perplexity.ai if not already there
     perplexity_url = config.get('browser', 'perplexity_url')
     if driver.current_url != perplexity_url and not perplexity_url.split('?')[0] in driver.current_url:
+        logging.info("Navigating to Perplexity.ai...")
         driver.get(perplexity_url)
+        logging.info("✓ Page loaded")
     
     element_wait_timeout = config.get('perplexity', 'element_wait_timeout') or 30
     wait = WebDriverWait(driver, element_wait_timeout)
+    
+    def _dump_html(label):
+        """Helper to dump HTML for debugging"""
+        try:
+            import os
+            from datetime import datetime
+            debug_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "debug_dumps")
+            os.makedirs(debug_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            html_path = os.path.join(debug_dir, f"{timestamp}_{label}.html")
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(driver.page_source)
+            logging.error(f"HTML dumped to: {html_path}")
+        except Exception as e:
+            logging.error(f"Failed to dump HTML: {e}")
     
     try:
         # Step 1: Wait for page to be ready and find question input
         if debug:
             logging.debug("Waiting for page to be ready...")
-        # Wait for the input element to be present and ready
-        question_input = wait.until(
-            EC.presence_of_element_located((
-                By.CSS_SELECTOR,
-                "p[dir='auto']"
-            ))
-        )
-        # Wait for it to be visible and interactable
-        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "p[dir='auto']")))
+        
+        # Wait for the input element to be present and ready (with timeout)
+        input_timeout = 15  # seconds
+        start_time = time.time()
+        question_input = None
+        
+        while time.time() - start_time < input_timeout:
+            try:
+                question_input = driver.find_element(By.CSS_SELECTOR, "p[dir='auto']")
+                if question_input and question_input.is_displayed():
+                    # Wait for it to be interactable
+                    wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "p[dir='auto']")))
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+        
+        if not question_input:
+            logging.error(f"Failed to find question input within {input_timeout} seconds")
+            _dump_html("input_not_found")
+            raise Exception("Question input element not found - HTML dumped for inspection")
+        
+        logging.info("✓ Page ready, question input found")
+        
+        # Click, focus, and enter text
+        logging.info("Pasting question...")
+        
+        # Method 1: Direct JavaScript (works in headless)
+        driver.execute_script("""
+            var el = arguments[0];
+            var text = arguments[1];
+            el.focus();
+            el.click();
+            el.textContent = text;
+            el.innerText = text;
+            
+            // Trigger all necessary events
+            var events = ['input', 'change', 'keyup', 'keydown', 'keypress'];
+            events.forEach(function(eventType) {
+                var event = new Event(eventType, { bubbles: true, cancelable: true });
+                el.dispatchEvent(event);
+            });
+        """, question_input, question)
+        time.sleep(0.3)
+        
+        # Verify text was entered
+        current_text = driver.execute_script("return arguments[0].textContent || arguments[0].innerText || '';", question_input)
         
         if debug:
-            logging.debug("✓ Page ready, question input found")
+            logging.debug(f"After JS method, text is: '{current_text}' (length: {len(current_text)})")
         
-        # Click, focus, and paste immediately
-        if debug:
-            logging.debug("Clicking and focusing input...")
-        driver.execute_script("arguments[0].click(); arguments[0].focus();", question_input)
+        if not current_text or len(current_text.strip()) < len(question) * 0.5:
+            if debug:
+                logging.debug("JS method didn't work, trying Selenium send_keys...")
+            # Method 2: Selenium send_keys (works better in some cases)
+            try:
+                question_input.clear()
+                question_input.send_keys(question)
+                time.sleep(0.3)
+                current_text = driver.execute_script("return arguments[0].textContent || arguments[0].innerText || '';", question_input)
+                if debug:
+                    logging.debug(f"After send_keys, text is: '{current_text}' (length: {len(current_text)})")
+            except Exception as e:
+                if debug:
+                    logging.debug(f"send_keys failed: {e}")
         
-        # Clear and paste using clipboard (fastest method)
-        pyperclip.copy(question)
-        question_input.send_keys(Keys.CONTROL + "a" + Keys.DELETE)
-        question_input.send_keys(Keys.CONTROL + "v")
+        if not current_text or len(current_text.strip()) < len(question) * 0.5:
+            if debug:
+                logging.debug("Both methods failed, trying clipboard paste...")
+            # Method 3: Clipboard paste (may not work in headless)
+            try:
+                pyperclip.copy(question)
+                question_input.send_keys(Keys.CONTROL + "a")
+                time.sleep(0.1)
+                question_input.send_keys(Keys.DELETE)
+                time.sleep(0.1)
+                question_input.send_keys(Keys.CONTROL + "v")
+                time.sleep(0.3)
+                current_text = driver.execute_script("return arguments[0].textContent || arguments[0].innerText || '';", question_input)
+                if debug:
+                    logging.debug(f"After clipboard paste, text is: '{current_text}' (length: {len(current_text)})")
+            except Exception as e:
+                if debug:
+                    logging.debug(f"Clipboard paste failed: {e}")
         
-        if debug:
-            # Verify text was entered
-            current_text = driver.execute_script("return arguments[0].textContent || arguments[0].innerText;", question_input)
-            logging.debug(f"Text entered: '{current_text[:50]}...' (length: {len(current_text)})")
+        # Final check
+        if not current_text or len(current_text.strip()) < len(question) * 0.5:
+            logging.error(f"Failed to enter text after all methods. Expected: '{question}', Got: '{current_text}'")
+            _dump_html("text_input_failed")
+            raise Exception("Failed to enter question text - HTML dumped for inspection")
         
-        logging.info(f"Question entered: {question[:50]}...")
+        logging.info(f"✓ Question pasted: '{current_text[:50]}...'")
         
         # Step 2: Skip model selection for now (as requested)
         logging.debug("Skipping model selection (disabled for testing)")
@@ -240,19 +337,32 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False):
         ]
         
         # Wait for submit button to be ready (should appear after text is entered)
-        submit_button = wait.until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='submit-button'], button[aria-label='Submit']"))
-        )
+        submit_timeout = 10
+        start_time = time.time()
+        submit_button = None
         
-        if debug:
-            logging.debug("✓ Submit button found, clicking...")
+        while time.time() - start_time < submit_timeout:
+            try:
+                submit_button = driver.find_element(By.CSS_SELECTOR, "button[data-testid='submit-button'], button[aria-label='Submit']")
+                if submit_button and submit_button.is_displayed():
+                    break
+            except Exception:
+                pass
+            time.sleep(0.3)
+        
+        if not submit_button:
+            logging.error(f"Failed to find submit button within {submit_timeout} seconds")
+            _dump_html("submit_button_not_found")
+            raise Exception("Submit button not found - HTML dumped for inspection")
+        
+        logging.info("✓ Submit button found, hitting send button...")
         
         # Click immediately
         driver.execute_script("arguments[0].click();", submit_button)
-        logging.info("Question submitted")
+        logging.info("✓ Question submitted")
         
         # Step 5: Wait for response to complete
-        logging.info("Waiting for response...")
+        logging.info("Waiting for result...")
         response_wait_timeout = config.get('perplexity', 'response_wait_timeout') or 300
         
         # Wait for stop button to disappear (indicates generation started)
@@ -302,40 +412,154 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False):
         else:
             raise TimeoutException("Timeout waiting for response to complete")
         
-        # Step 6: Find and click copy button
-        logging.info("Copying response to clipboard...")
-        # Find copy button in the response area
-        copy_button = wait.until(
-            EC.element_to_be_clickable((
-                By.CSS_SELECTOR,
-                "button[aria-label='Copy']"
-            ))
-        )
-        copy_button.click()
-        time.sleep(1)
+        # Step 6: Extract response text from page (more reliable than clipboard in headless)
+        logging.info("Response complete! Extracting response text...")
         
-        # Step 7: Get response from clipboard
-        response_text = pyperclip.paste()
+        response_text = None
         
-        # Also try to extract from page if clipboard is empty
-        if not response_text or len(response_text.strip()) < 10:
-            logging.warning("Clipboard appears empty, trying to extract from page...")
-            # Try to find the response text in the page
-            try:
-                # Look for the main response content
-                response_elements = driver.find_elements(
+        # Method 1: Try to find and click copy button, then get from clipboard
+        try:
+            copy_button = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((
                     By.CSS_SELECTOR,
-                    "div[class*='prose'], div[class*='markdown'], article"
-                )
-                if response_elements:
-                    response_text = response_elements[-1].text
+                    "button[aria-label='Copy']"
+                ))
+            )
+            copy_button.click()
+            time.sleep(0.5)
+            response_text = pyperclip.paste()
+            if response_text and len(response_text.strip()) >= 10:
+                logging.info("✓ Response retrieved from clipboard")
+        except Exception as e:
+            if debug:
+                logging.debug(f"Copy button method failed: {e}")
+        
+        # Method 2: Extract directly from page using JavaScript (most reliable)
+        if not response_text or len(response_text.strip()) < 10:
+            logging.info("Extracting response from page...")
+            try:
+                # Use JavaScript to find the answer text more precisely
+                response_text = driver.execute_script("""
+                    // Find all text nodes and elements
+                    function findAnswerText(question) {
+                        // Find "Ask a follow-up" element first
+                        const followUp = Array.from(document.querySelectorAll('*')).find(el => 
+                            el.textContent && el.textContent.includes('Ask a follow-up')
+                        );
+                        
+                        if (!followUp) return null;
+                        
+                        // Walk backwards from "Ask a follow-up" to find the answer
+                        let current = followUp;
+                        let answerParts = [];
+                        const visited = new Set();
+                        
+                        // Look for the answer container - it should be before "Ask a follow-up"
+                        for (let i = 0; i < 10; i++) {
+                            current = current.previousElementSibling || current.parentElement;
+                            if (!current || visited.has(current)) break;
+                            visited.add(current);
+                            
+                            const text = current.textContent || '';
+                            // Skip if it contains navigation or question
+                            if (text.includes('Home') || text.includes('Discover') || 
+                                text.includes('Account') || text.includes('Upgrade') ||
+                                question.toLowerCase().includes(text.toLowerCase().substring(0, 20))) {
+                                continue;
+                            }
+                            
+                            // If this looks like answer content
+                            if (text.length > 50 && !text.includes('Ask a follow-up') && 
+                                !text.includes('Working…') && !text.includes('Answer')) {
+                                answerParts.unshift(text.trim());
+                            }
+                        }
+                        
+                        // Also try finding by looking for the largest text block
+                        if (answerParts.length === 0) {
+                            const allDivs = Array.from(document.querySelectorAll('div, p, article'));
+                            const candidates = [];
+                            
+                            for (const div of allDivs) {
+                                const text = (div.textContent || '').trim();
+                                if (text.length > 50 && text.length < 10000) {
+                                    // Check if it's likely the answer
+                                    if (!text.includes('Home') && !text.includes('Discover') &&
+                                        !text.includes('Account') && !text.includes('Upgrade') &&
+                                        !question.toLowerCase().includes(text.toLowerCase().substring(0, 30)) &&
+                                        !text.includes('Ask a follow-up') && !text.includes('Working…')) {
+                                        candidates.push({length: text.length, text: text});
+                                    }
+                                }
+                            }
+                            
+                            if (candidates.length > 0) {
+                                candidates.sort((a, b) => b.length - a.length);
+                                return candidates[0].text;
+                            }
+                        }
+                        
+                        return answerParts.join('\\n').trim() || null;
+                    }
+                    
+                    return findAnswerText(arguments[0]);
+                """, question)
+                
+                if response_text and len(response_text.strip()) >= 10:
+                    logging.info(f"✓ Response extracted via JavaScript (length: {len(response_text)})")
+                else:
+                    response_text = None
+                    
             except Exception as e:
-                logging.warning(f"Could not extract response from page: {e}")
+                if debug:
+                    logging.debug(f"JavaScript extraction failed: {e}")
+                response_text = None
+            
+            # Fallback: Simple text extraction from body
+            if not response_text or len(response_text.strip()) < 10:
+                try:
+                    body_text = driver.find_element(By.TAG_NAME, "body").text
+                    # Split by lines and filter
+                    lines = body_text.split('\n')
+                    answer_lines = []
+                    skip_until_answer = True
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        # Skip navigation
+                        if line in ["Home", "Discover", "Spaces", "Finance", "Account", "Upgrade", "Install"]:
+                            continue
+                        # Skip question
+                        if question.lower() in line.lower():
+                            skip_until_answer = False
+                            continue
+                        # Skip UI elements
+                        if line in ["Answer", "Working…", "Ask a follow-up", "Copy", "Submit"]:
+                            if line == "Answer":
+                                skip_until_answer = False
+                            continue
+                        # Collect answer lines
+                        if not skip_until_answer and line and len(line) > 5:
+                            if "Ask a follow-up" in line:
+                                break
+                            answer_lines.append(line)
+                    
+                    if answer_lines:
+                        response_text = '\n'.join(answer_lines).strip()
+                        if len(response_text) > 20:
+                            logging.info(f"✓ Response extracted from body text (length: {len(response_text)})")
+                except Exception as e:
+                    if debug:
+                        logging.debug(f"Body text extraction failed: {e}")
         
         if not response_text or len(response_text.strip()) < 10:
-            raise Exception("Could not retrieve response text")
+            logging.error("Failed to retrieve response text")
+            _dump_html("response_extraction_failed")
+            raise Exception("Could not retrieve response text - HTML dumped for inspection")
         
-        logging.info(f"Response retrieved ({len(response_text)} characters)")
+        logging.info(f"✓ Response retrieved ({len(response_text)} characters)")
         return response_text.strip()
         
     except Exception as e:
