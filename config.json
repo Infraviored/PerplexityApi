@@ -3,6 +3,7 @@
     "perplexity_url": "https://www.perplexity.ai/?login-source=signupButton&login-new=false",
     "user_data_dir": "~/.perplexity-browser-profile",
     "headless": true,
+    "use_xvfb": true,
     "browser_load_wait_seconds": 5,
     "chrome_driver_path": null,
     "login_detect_timeout_seconds": 45

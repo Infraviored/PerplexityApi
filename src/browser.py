@@ -58,6 +58,7 @@ class BrowserManager:
         self.config = config
         self.driver = None
         self._ephemeral_dir = None
+        self.vdisplay = None
         
     def start_headless_browser(self, use_ephemeral: bool = False):
         """
@@ -66,6 +67,10 @@ class BrowserManager:
         Returns:
             webdriver: Undetected Chrome WebDriver instance
         """
+        # Check if Xvfb is enabled
+        use_xvfb = self.config.get('browser', 'use_xvfb') or False
+        if use_xvfb:
+            return self._start_browser_with_xvfb(use_ephemeral=use_ephemeral)
         return self._start_browser(headless=True, use_ephemeral=use_ephemeral)
     
     def start_visible_browser(self, use_ephemeral: bool = False):
@@ -75,6 +80,39 @@ class BrowserManager:
         Primarily used for manual login flows so the user can complete authentication.
         """
         return self._start_browser(headless=False, use_ephemeral=use_ephemeral)
+    
+    def _start_browser_with_xvfb(self, use_ephemeral: bool = False):
+        """Start browser in headed mode using Xvfb virtual display"""
+        try:
+            from xvfbwrapper import Xvfb
+        except ImportError:
+            logging.error("xvfbwrapper not installed. Install with: pip install xvfbwrapper")
+            logging.warning("Falling back to regular headless mode")
+            return self._start_browser(headless=True, use_ephemeral=use_ephemeral)
+        
+        # Start virtual display
+        try:
+            self.vdisplay = Xvfb(width=1920, height=1080)
+            self.vdisplay.start()
+            logging.info("Started Xvfb virtual display")
+        except Exception as e:
+            logging.error(f"Failed to start Xvfb: {e}")
+            logging.warning("Falling back to regular headless mode")
+            return self._start_browser(headless=True, use_ephemeral=use_ephemeral)
+        
+        try:
+            # Use headed mode (headless=False) but it runs on virtual display
+            driver = self._start_browser(headless=False, use_ephemeral=use_ephemeral)
+            return driver
+        except Exception as e:
+            # Clean up virtual display on error
+            if self.vdisplay is not None:
+                try:
+                    self.vdisplay.stop()
+                    self.vdisplay = None
+                except Exception:
+                    pass
+            raise e
     
     def _start_browser(self, headless: bool = True, use_ephemeral: bool = False):
         """Shared browser launch routine using undetected_chromedriver."""
@@ -96,6 +134,17 @@ class BrowserManager:
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
         
+        # Use --headless=new instead of headless parameter for better stealth
+        # This makes headless Chrome work exactly like regular Chrome with same backend code
+        if headless:
+            options.add_argument("--headless=new")
+            # Additional headless stealth arguments
+            options.add_argument("--disable-dev-shm-usage")
+            # Don't disable GPU in new headless mode - it uses real GPU rendering
+            # This is important: --headless=new uses real GPU, so don't disable it
+            # Set realistic window size
+            options.add_argument("--window-size=1920,1080")
+        
         # Disable password manager and save password prompts
         prefs = {
             "credentials_enable_service": False,
@@ -105,10 +154,12 @@ class BrowserManager:
         options.add_experimental_option("prefs", prefs)
         
         # Build driver kwargs
+        # Note: We use --headless=new flag in options for better stealth
+        # The headless parameter still needs to be set correctly for undetected-chromedriver
         uc_kwargs = {
             "use_subprocess": False,
-            "headless": headless,
-            "options": options,
+            "headless": headless,  # This is still needed for undetected-chromedriver
+            "options": options,    # --headless=new flag in options makes it more realistic
         }
         if major:
             uc_kwargs["version_main"] = major
@@ -122,8 +173,108 @@ class BrowserManager:
                 mode = "Headless" if headless else "Visible"
                 logging.info("%s Chromium/Chrome started and navigated to Perplexity.ai", mode)
                 
-                # Wait a bit and check for Cloudflare
-                time.sleep(3)
+                # DON'T use CDP in headless mode - it's detectable
+                # Only use CDP in visible mode (restore original behavior that worked)
+                if not headless:
+                    try:
+                        # Comprehensive anti-detection script injection via CDP (visible mode only)
+                        # Original approach: inject after navigation (this worked before)
+                        self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                            'source': '''
+                                // Override navigator.webdriver (critical for detection)
+                                Object.defineProperty(navigator, 'webdriver', {
+                                    get: () => undefined
+                                });
+                                
+                                // Override chrome runtime (make it look like real Chrome)
+                                if (!window.chrome) {
+                                    window.chrome = {};
+                                }
+                                if (!window.chrome.runtime) {
+                                    window.chrome.runtime = {};
+                                }
+                                
+                                // WebGL fingerprinting fix - make it look like real hardware
+                                const getParameter = WebGLRenderingContext.prototype.getParameter;
+                                WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                                    if (parameter === 37445) return 'Intel Inc.';  // UNMASKED_VENDOR_WEBGL
+                                    if (parameter === 37446) return 'Intel Iris OpenGL Engine';  // UNMASKED_RENDERER_WEBGL
+                                    return getParameter.call(this, parameter);
+                                };
+                                
+                                // Also fix WebGL2
+                                if (typeof WebGL2RenderingContext !== 'undefined') {
+                                    const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+                                    WebGL2RenderingContext.prototype.getParameter = function(parameter) {
+                                        if (parameter === 37445) return 'Intel Inc.';
+                                        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                                        return getParameter2.call(this, parameter);
+                                    };
+                                }
+                                
+                                // Fix plugins array
+                                Object.defineProperty(navigator, 'plugins', {
+                                    get: () => [1, 2, 3, 4, 5]
+                                });
+                                
+                                // Fix languages
+                                Object.defineProperty(navigator, 'languages', {
+                                    get: () => ['en-US', 'en']
+                                });
+                                
+                                // Override permissions API
+                                const originalQuery = window.navigator.permissions.query;
+                                window.navigator.permissions.query = (parameters) => (
+                                    parameters.name === 'notifications' ?
+                                        Promise.resolve({ state: Notification.permission }) :
+                                        originalQuery(parameters)
+                                );
+                                
+                                // Remove automation indicators
+                                delete navigator.__proto__.webdriver;
+                            '''
+                        })
+                        logging.debug("Anti-detection scripts injected via CDP (visible mode)")
+                    except Exception as e:
+                        logging.debug(f"Could not inject anti-detection scripts via CDP: {e}")
+                
+                # Grant clipboard permissions
+                if not headless:
+                    # Use CDP in visible mode (preferred)
+                    try:
+                        self.driver.execute_cdp_cmd('Browser.grantPermissions', {
+                            'origin': perplexity_url.split('?')[0],
+                            'permissions': ['clipboardReadWrite', 'clipboardSanitizedWrite']
+                        })
+                    except Exception:
+                        try:
+                            self.driver.set_permissions("clipboard-read", "granted")
+                            self.driver.set_permissions("clipboard-write", "granted")
+                        except Exception as e:
+                            logging.debug(f"Could not set clipboard permissions: {e}")
+                else:
+                    # In headless mode, use execute_script instead of CDP
+                    try:
+                        self.driver.execute_script("""
+                            navigator.permissions.query = (parameters) => {
+                                if (parameters.name === 'clipboard-read' || parameters.name === 'clipboard-write') {
+                                    return Promise.resolve({ state: 'granted' });
+                                }
+                                return Promise.resolve({ state: 'prompt' });
+                            };
+                        """)
+                    except Exception as e:
+                        logging.debug(f"Permission override failed in headless: {e}")
+                
+                # Inject stealth scripts AFTER page load in headless mode only (no CDP)
+                # Visible mode uses CDP above (original working approach)
+                if headless:
+                    self._inject_stealth_scripts_post_load()
+                    self._add_realistic_navigator_properties()
+                    # Skip human behavior on initial load - it can interfere
+                
+                # Wait a bit and check for Cloudflare (reduced from 3 to 1 second for faster startup)
+                time.sleep(1)
                 if self._check_cloudflare_challenge():
                     logging.info("Cloudflare challenge detected, attempting bypass...")
                     self._bypass_cloudflare()
@@ -139,6 +290,178 @@ class BrowserManager:
                 raise
 
         return _launch()
+    
+    def _inject_stealth_scripts_post_load(self):
+        """Inject anti-detection scripts AFTER page load without CDP (for headless mode)"""
+        if self.driver is None:
+            return
+        
+        try:
+            self.driver.execute_script("""
+                // Override navigator.webdriver (critical for detection)
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                
+                // Override chrome runtime (make it look like real Chrome)
+                if (!window.chrome) {
+                    window.chrome = {};
+                }
+                if (!window.chrome.runtime) {
+                    window.chrome.runtime = {};
+                }
+                
+                // WebGL fingerprinting fix - make it look like real hardware
+                const getParameter = WebGLRenderingContext.prototype.getParameter;
+                WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                    if (parameter === 37445) return 'Intel Inc.';  // UNMASKED_VENDOR_WEBGL
+                    if (parameter === 37446) return 'Intel Iris OpenGL Engine';  // UNMASKED_RENDERER_WEBGL
+                    return getParameter.call(this, parameter);
+                };
+                
+                // Also fix WebGL2
+                if (typeof WebGL2RenderingContext !== 'undefined') {
+                    const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+                    WebGL2RenderingContext.prototype.getParameter = function(parameter) {
+                        if (parameter === 37445) return 'Intel Inc.';
+                        if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                        return getParameter2.call(this, parameter);
+                    };
+                }
+                
+                // Fix plugins array
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+                
+                // Fix languages
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['en-US', 'en']
+                });
+                
+                // Override permissions API
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({ state: Notification.permission }) :
+                        originalQuery(parameters)
+                );
+                
+                // Remove automation indicators
+                delete navigator.__proto__.webdriver;
+            """)
+            logging.debug("Anti-detection scripts injected via execute_script (headless mode)")
+        except Exception as e:
+            logging.debug(f"Script injection failed in headless mode: {e}")
+    
+    def _add_realistic_navigator_properties(self):
+        """Add realistic navigator and screen properties for headless mode"""
+        if self.driver is None:
+            return
+        
+        try:
+            self.driver.execute_script("""
+                // Set realistic navigator properties
+                Object.defineProperty(navigator, 'platform', {
+                    get: () => 'Linux x86_64'
+                });
+                
+                Object.defineProperty(navigator, 'hardwareConcurrency', {
+                    get: () => 8
+                });
+                
+                Object.defineProperty(navigator, 'deviceMemory', {
+                    get: () => 8
+                });
+                
+                Object.defineProperty(navigator, 'maxTouchPoints', {
+                    get: () => 0
+                });
+                
+                // Add realistic screen properties
+                Object.defineProperty(screen, 'width', {
+                    get: () => 1920
+                });
+                
+                Object.defineProperty(screen, 'height', {
+                    get: () => 1080
+                });
+                
+                Object.defineProperty(screen, 'availWidth', {
+                    get: () => 1920
+                });
+                
+                Object.defineProperty(screen, 'availHeight', {
+                    get: () => 1080
+                });
+                
+                // Override notification permission
+                Object.defineProperty(Notification, 'permission', {
+                    get: () => 'default'
+                });
+            """)
+            logging.debug("Realistic navigator properties added")
+        except Exception as e:
+            logging.debug(f"Failed to add realistic navigator properties: {e}")
+    
+    def _add_human_behavior(self):
+        """Add random delays and mouse movements to appear more human"""
+        if self.driver is None:
+            return
+        
+        try:
+            import random
+            from selenium.webdriver.common.action_chains import ActionChains
+            
+            # Random mouse movement
+            actions = ActionChains(self.driver)
+            for _ in range(random.randint(2, 5)):
+                x = random.randint(100, 800)
+                y = random.randint(100, 600)
+                actions.move_by_offset(x, y)
+            actions.perform()
+            
+            # Random delay
+            time.sleep(random.uniform(0.5, 2.0))
+            logging.debug("Human behavior simulation added")
+        except Exception as e:
+            logging.debug(f"Human behavior simulation failed: {e}")
+    
+    def _debug_navigator_properties(self):
+        """Debug: Print all navigator properties for comparison between modes"""
+        if self.driver is None:
+            return
+        
+        try:
+            props = self.driver.execute_script("""
+                return {
+                    webdriver: navigator.webdriver,
+                    platform: navigator.platform,
+                    userAgent: navigator.userAgent,
+                    hardwareConcurrency: navigator.hardwareConcurrency,
+                    deviceMemory: navigator.deviceMemory,
+                    languages: navigator.languages,
+                    plugins: navigator.plugins.length,
+                    maxTouchPoints: navigator.maxTouchPoints,
+                    vendor: navigator.vendor,
+                    vendorSub: navigator.vendorSub,
+                    productSub: navigator.productSub,
+                    screenWidth: screen.width,
+                    screenHeight: screen.height,
+                    availWidth: screen.availWidth,
+                    availHeight: screen.availHeight,
+                    colorDepth: screen.colorDepth,
+                    pixelDepth: screen.pixelDepth,
+                    hasChrome: typeof window.chrome !== 'undefined',
+                    permissions: typeof navigator.permissions !== 'undefined'
+                };
+            """)
+            
+            logging.info("Navigator properties:")
+            for key, value in props.items():
+                logging.info(f"  {key}: {value}")
+        except Exception as e:
+            logging.debug(f"Failed to debug navigator properties: {e}")
     
     def _check_cloudflare_challenge(self) -> bool:
         """Check if Cloudflare challenge is present."""
@@ -161,8 +484,9 @@ class BrowserManager:
     
     def _bypass_cloudflare(self, timeout: int = 120) -> bool:
         """
-        Bypass Cloudflare Turnstile challenge by trying CDP clicks at multiple viewport positions.
-        In visible mode, records manual click coordinates for future use in headless mode.
+        Bypass Cloudflare Turnstile challenge.
+        Uses CDP clicks in visible mode (where it works), ActionChains as fallback.
+        In visible mode, records manual click coordinates for future use.
         
         Returns True if bypassed, False otherwise
         """
@@ -192,127 +516,223 @@ class BrowserManager:
             logging.info("✓ Turnstile already bypassed!")
             return True
         
-        # Check if we have saved click coordinates
-        saved_coords = self._load_saved_click_coords()
-        if saved_coords:
-            logging.info(f"Using saved click coordinates: ({saved_coords['x']}, {saved_coords['y']})")
-            try:
-                self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                    "type": "mouseMoved",
-                    "x": float(saved_coords['x']),
-                    "y": float(saved_coords['y'])
-                })
-                self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                    "type": "mousePressed",
-                    "x": float(saved_coords['x']),
-                    "y": float(saved_coords['y']),
-                    "button": "left",
-                    "buttons": 1,
-                    "clickCount": 1
-                })
-                self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                    "type": "mouseReleased",
-                    "x": float(saved_coords['x']),
-                    "y": float(saved_coords['y']),
-                    "button": "left",
-                    "buttons": 1,
-                    "clickCount": 1
-                })
-                time.sleep(2)
-                if success_check():
-                    logging.info("✓ Turnstile bypassed using saved coordinates!")
-                    return True
-            except Exception as e:
-                logging.debug(f"Saved coordinates failed: {e}")
+        headless = self.config.get('browser', 'headless') or False
         
-        # Try clicks at multiple vertical offsets from center
-        offsets_percent = [0.02, 0.04, 0.06, 0.08, 0.10]
-        
-        for offset_pct in offsets_percent:
+        # Try ActionChains first (works in both modes, more realistic)
+        try:
+            from selenium.webdriver.common.action_chains import ActionChains
+            
+            # Wait for iframe
+            iframe = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='challenges.cloudflare.com']"))
+            )
+            
+            # Switch to iframe
+            self.driver.switch_to.frame(iframe)
+            
+            # Find and click the checkbox
+            checkbox = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "input[type='checkbox']"))
+            )
+            
+            # Use ActionChains for more realistic clicking
+            actions = ActionChains(self.driver)
+            actions.move_to_element(checkbox).pause(0.5).click().perform()
+            
+            # Switch back
+            self.driver.switch_to.default_content()
+            
+            time.sleep(3)
             if success_check():
-                logging.info("✓ Turnstile bypassed!")
+                logging.info("✓ Turnstile bypassed with ActionChains!")
                 return True
-            
-            click_y = cy + (viewport_height * offset_pct)
-            logging.info(f"🖱️  Clicking at offset {offset_pct*100:.0f}%: ({cx:.0f}, {click_y:.0f})")
-            
-            # CDP click
+        except Exception as e:
+            logging.debug(f"ActionChains click failed: {e}")
+            # Make sure we're back to default content
             try:
-                self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                    "type": "mouseMoved",
-                    "x": float(cx),
-                    "y": float(click_y)
-                })
-                self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                    "type": "mousePressed",
-                    "x": float(cx),
-                    "y": float(click_y),
-                    "button": "left",
-                    "buttons": 1,
-                    "clickCount": 1
-                })
-                self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
-                    "type": "mouseReleased",
-                    "x": float(cx),
-                    "y": float(click_y),
-                    "button": "left",
-                    "buttons": 1,
-                    "clickCount": 1
-                })
-                logging.info("✓ Click executed")
+                self.driver.switch_to.default_content()
             except Exception:
                 pass
-            
-            # Wait and check if success
-            for check in range(3):
-                if success_check():
-                    logging.info(f"✓ Turnstile bypassed at {offset_pct*100:.0f}% offset!")
-                    return True
-                time.sleep(0.5)
         
-        # Auto-clicks didn't work - wait for manual intervention (visible mode only)
+        # Fallback: Use CDP clicks (only in visible mode where it works)
+        if not headless:
+            # Check if we have saved click coordinates
+            saved_coords = self._load_saved_click_coords()
+            if saved_coords:
+                logging.info(f"Using saved click coordinates: ({saved_coords['x']}, {saved_coords['y']})")
+                try:
+                    self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                        "type": "mouseMoved",
+                        "x": float(saved_coords['x']),
+                        "y": float(saved_coords['y'])
+                    })
+                    self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                        "type": "mousePressed",
+                        "x": float(saved_coords['x']),
+                        "y": float(saved_coords['y']),
+                        "button": "left",
+                        "buttons": 1,
+                        "clickCount": 1
+                    })
+                    self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                        "type": "mouseReleased",
+                        "x": float(saved_coords['x']),
+                        "y": float(saved_coords['y']),
+                        "button": "left",
+                        "buttons": 1,
+                        "clickCount": 1
+                    })
+                    time.sleep(2)
+                    if success_check():
+                        logging.info("✓ Turnstile bypassed using saved coordinates!")
+                        return True
+                except Exception as e:
+                    logging.debug(f"Saved coordinates failed: {e}")
+            
+            # Try clicks at multiple vertical offsets from center (original approach)
+            offsets_percent = [0.02, 0.04, 0.06, 0.08, 0.10]
+            
+            for offset_pct in offsets_percent:
+                if success_check():
+                    logging.info("✓ Turnstile bypassed!")
+                    return True
+                
+                click_y = cy + (viewport_height * offset_pct)
+                logging.info(f"🖱️  Clicking at offset {offset_pct*100:.0f}%: ({cx:.0f}, {click_y:.0f})")
+                
+                # CDP click (only in visible mode)
+                try:
+                    self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                        "type": "mouseMoved",
+                        "x": float(cx),
+                        "y": float(click_y)
+                    })
+                    self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                        "type": "mousePressed",
+                        "x": float(cx),
+                        "y": float(click_y),
+                        "button": "left",
+                        "buttons": 1,
+                        "clickCount": 1
+                    })
+                    self.driver.execute_cdp_cmd("Input.dispatchMouseEvent", {
+                        "type": "mouseReleased",
+                        "x": float(cx),
+                        "y": float(click_y),
+                        "button": "left",
+                        "buttons": 1,
+                        "clickCount": 1
+                    })
+                    logging.info("✓ Click executed")
+                except Exception:
+                    pass
+                
+                # Wait and check if success
+                for check in range(3):
+                    if success_check():
+                        logging.info(f"✓ Turnstile bypassed at {offset_pct*100:.0f}% offset!")
+                        return True
+                    time.sleep(0.5)
+        
+        # If automated click fails, check if we're in visible mode for manual intervention
         headless = self.config.get('browser', 'headless') or False
         if not headless:
             logging.info("⚠️ Auto-clicks didn't work - please click Turnstile manually...")
             logging.info("📝 Recording your click coordinates for future headless use...")
             
-            # Set up click recording
-            click_recorded = {'x': None, 'y': None, 'recorded': False}
-            
-            def record_click(x, y):
-                click_recorded['x'] = x
-                click_recorded['y'] = y
-                click_recorded['recorded'] = True
-                logging.info(f"📝 Recorded click at: ({x}, {y})")
-                self._save_click_coords(x, y)
-            
-            # Inject JavaScript to record clicks
+            # Inject comprehensive JavaScript to record clicks (including iframe clicks)
             self.driver.execute_script("""
+                // Initialize click tracking
+                window._lastClickX = null;
+                window._lastClickY = null;
+                window._clickRecorded = false;
+                
+                // Record click function
                 window._recordClick = function(x, y) {
                     window._lastClickX = x;
                     window._lastClickY = y;
+                    window._clickRecorded = true;
+                    console.log('Click recorded at:', x, y);
                 };
                 
-                document.addEventListener('click', function(e) {
-                    window._recordClick(e.clientX, e.clientY);
-                }, true);
+                // Capture clicks on document (including iframes)
+                function captureClick(e) {
+                    // Get page coordinates (not just viewport)
+                    var x = e.pageX || (e.clientX + window.scrollX);
+                    var y = e.pageY || (e.clientY + window.scrollY);
+                    window._recordClick(x, y);
+                }
+                
+                // Add listeners to document and all iframes
+                document.addEventListener('click', captureClick, true);
+                document.addEventListener('mousedown', captureClick, true);
+                
+                // Also try to capture clicks in iframes
+                var iframes = document.querySelectorAll('iframe');
+                iframes.forEach(function(iframe) {
+                    try {
+                        iframe.contentWindow.addEventListener('click', function(e) {
+                            var rect = iframe.getBoundingClientRect();
+                            var x = rect.left + e.clientX + window.scrollX;
+                            var y = rect.top + e.clientY + window.scrollY;
+                            window._recordClick(x, y);
+                        }, true);
+                    } catch(e) {
+                        // Cross-origin iframe, can't access
+                    }
+                });
+                
+                // Monitor for new iframes
+                var observer = new MutationObserver(function(mutations) {
+                    var iframes = document.querySelectorAll('iframe');
+                    iframes.forEach(function(iframe) {
+                        try {
+                            iframe.contentWindow.addEventListener('click', function(e) {
+                                var rect = iframe.getBoundingClientRect();
+                                var x = rect.left + e.clientX + window.scrollX;
+                                var y = rect.top + e.clientY + window.scrollY;
+                                window._recordClick(x, y);
+                            }, true);
+                        } catch(e) {
+                            // Cross-origin iframe, can't access
+                        }
+                    });
+                });
+                observer.observe(document.body, { childList: true, subtree: true });
             """)
             
             timeout_manual = time.time() + timeout
+            last_click_check = time.time()
             while time.time() < timeout_manual:
-                if success_check():
-                    # Check if we recorded a click
+                # Check for recorded clicks periodically (not just after success)
+                if time.time() - last_click_check > 0.5:
                     try:
                         click_x = self.driver.execute_script("return window._lastClickX;")
                         click_y = self.driver.execute_script("return window._lastClickY;")
-                        if click_x and click_y:
+                        click_recorded = self.driver.execute_script("return window._clickRecorded;")
+                        
+                        if click_recorded and click_x is not None and click_y is not None:
                             logging.info(f"📝 Recorded manual click at: ({click_x}, {click_y})")
+                            self._save_click_coords(click_x, click_y)
+                            # Reset to avoid logging multiple times
+                            self.driver.execute_script("window._clickRecorded = false;")
+                    except Exception as e:
+                        logging.debug(f"Error checking click coordinates: {e}")
+                    last_click_check = time.time()
+                
+                if success_check():
+                    # Final check for click coordinates before returning
+                    try:
+                        click_x = self.driver.execute_script("return window._lastClickX;")
+                        click_y = self.driver.execute_script("return window._lastClickY;")
+                        if click_x is not None and click_y is not None:
+                            logging.info(f"📝 Final recorded click at: ({click_x}, {click_y})")
                             self._save_click_coords(click_x, click_y)
                     except Exception:
                         pass
                     logging.info("✓ Turnstile bypassed (manual click)!")
                     return True
-                time.sleep(0.5)
+                time.sleep(0.2)  # Check more frequently
         else:
             # Headless mode - just wait a bit more
             logging.info("⚠️ Auto-clicks didn't work in headless mode")
@@ -460,7 +880,7 @@ class BrowserManager:
             return False
             
     def close(self):
-        """Close the browser"""
+        """Close the browser and virtual display"""
         if self.driver is not None:
             try:
                 self.driver.quit()
@@ -468,6 +888,16 @@ class BrowserManager:
                 logging.info("Browser closed")
             except Exception as e:
                 logging.error(f"Failed to close browser: {e}")
+        
+        # Stop virtual display
+        if self.vdisplay is not None:
+            try:
+                self.vdisplay.stop()
+                self.vdisplay = None
+                logging.info("Stopped Xvfb virtual display")
+            except Exception as e:
+                logging.debug(f"Failed to stop Xvfb: {e}")
+        
         # Cleanup ephemeral profile if used
         if self._ephemeral_dir:
             try:
