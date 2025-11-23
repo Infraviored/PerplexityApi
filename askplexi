@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""
+Command-line wrapper for Perplexity.ai API server
+Usage:
+    askplexi "your question"
+    askplexi "your question" --new
+    askplexi "your question" --id "session-id"
+"""
+import argparse
+import sys
+import requests
+import json
+import os
+
+
+def get_server_url():
+    """Get server URL from environment or use default"""
+    return os.environ.get('PERPLEXITY_API_URL', 'http://localhost:8088')
+
+
+def ask_plexi(question, new_session=False, session_id=None):
+    """
+    Ask a question to Perplexity.ai via API server
+    
+    Args:
+        question: The question to ask
+        new_session: Create a new session
+        session_id: Use specific session ID
+        
+    Returns:
+        Response text
+    """
+    server_url = get_server_url()
+    
+    payload = {
+        'question': question
+    }
+    
+    if new_session:
+        payload['new_session'] = True
+    elif session_id:
+        # For now, we'll need to implement session_id support in the server
+        # For this version, we'll just use new_session if session_id is provided
+        payload['new_session'] = True
+    
+    try:
+        response = requests.post(
+            f'{server_url}/ask',
+            json=payload,
+            timeout=300  # 5 minute timeout for long responses
+        )
+        response.raise_for_status()
+        
+        data = response.json()
+        return data.get('response', ''), data.get('session_id')
+    except requests.exceptions.ConnectionError:
+        print(f"Error: Could not connect to server at {server_url}", file=sys.stderr)
+        print("Make sure the server is running: python3 server.py", file=sys.stderr)
+        sys.exit(1)
+    except requests.exceptions.Timeout:
+        print("Error: Request timed out", file=sys.stderr)
+        sys.exit(1)
+    except requests.exceptions.HTTPError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        if hasattr(e.response, 'text'):
+            print(f"Details: {e.response.text}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Ask Perplexity.ai a question',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  askplexi "What is 2+2?"
+  askplexi "What is 2+2?" --new
+  askplexi "What is 2+2?" --id "session-id-123"
+        """
+    )
+    
+    parser.add_argument(
+        'question',
+        nargs='?',
+        help='The question to ask'
+    )
+    
+    parser.add_argument(
+        '--new',
+        action='store_true',
+        help='Create a new session'
+    )
+    
+    parser.add_argument(
+        '--id',
+        metavar='SESSION_ID',
+        help='Use specific session ID'
+    )
+    
+    parser.add_argument(
+        '--server',
+        metavar='URL',
+        default=None,
+        help='Server URL (default: http://localhost:8088 or PERPLEXITY_API_URL env var)'
+    )
+    
+    args = parser.parse_args()
+    
+    # Override server URL if provided
+    if args.server:
+        os.environ['PERPLEXITY_API_URL'] = args.server
+    
+    # Get question from argument or stdin
+    if args.question:
+        question = args.question
+    else:
+        # Read from stdin if no argument provided
+        question = sys.stdin.read().strip()
+        if not question:
+            parser.print_help()
+            sys.exit(1)
+    
+    # Ask the question
+    response, session_id = ask_plexi(
+        question,
+        new_session=args.new,
+        session_id=args.id
+    )
+    
+    # Print response
+    print(response)
+    
+    # Optionally print session ID (can be useful for debugging)
+    if os.environ.get('PERPLEXITY_DEBUG'):
+        if session_id:
+            print(f"\n[Session ID: {session_id}]", file=sys.stderr)
+
+
+if __name__ == '__main__':
+    main()
+

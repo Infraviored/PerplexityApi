@@ -35,12 +35,19 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
         logger.info(f"{self.address_string()} - {format % args}")
     
     def do_OPTIONS(self):
-        """Handle CORS preflight"""
+        """Handle CORS preflight and health checks"""
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
+    
+    def do_GET(self):
+        """Handle GET requests for health checks"""
+        if self.path == '/health' or self.path == '/':
+            self._send_json_response(200, {'status': 'ok', 'service': 'perplexity-api'})
+        else:
+            self._send_error_response(404, "Not Found", "Only /ask, /health endpoints are supported")
     
     def do_POST(self):
         """Handle POST requests"""
