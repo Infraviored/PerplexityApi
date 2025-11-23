@@ -137,8 +137,13 @@ class BrowserManager:
         
         try:
             logging.info("Starting browser with nodriver (better anti-detection)...")
+            # Use wrapper but ensure it's called in clean context
+            # The wrapper works when called directly, so use it
             self.driver = get_browser(headless=headless)
+            
+            perplexity_url = self.config.get('browser', 'perplexity_url')
             self.driver.get(perplexity_url)
+            
             mode = "Headless" if headless else "Visible"
             logging.info("%s Chromium/Chrome started with nodriver and navigated to Perplexity.ai", mode)
             
@@ -153,6 +158,8 @@ class BrowserManager:
             return self.driver
         except Exception as e:
             logging.error(f"Failed to start nodriver browser: {e}")
+            import traceback
+            logging.debug(traceback.format_exc())
             # Fallback disabled for now
             raise
     

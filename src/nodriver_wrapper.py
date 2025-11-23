@@ -271,17 +271,30 @@ class NodriverBrowser:
         self.quit()
 
 
+# Get nodriver's event loop - create fresh each time to avoid conflicts
+def _get_nodriver_loop():
+    """Get fresh nodriver event loop"""
+    try:
+        # Check if there's already a running event loop
+        loop = asyncio.get_running_loop()
+        # If we're in an async context, we can't use run_until_complete
+        # This might be the issue
+        logging.warning("Already in async context, nodriver may not work properly")
+    except RuntimeError:
+        # No running loop, we're good
+        pass
+    return uc.loop()
+
 def get_browser(headless: bool = True, user_data_dir: Optional[str] = None):
     """Get nodriver browser instance using nodriver's own event loop"""
     import shutil
-    import os
     
     # Reduce nodriver's verbose debug logging (but keep some for debugging)
     logging.getLogger('nodriver').setLevel(logging.INFO)
     logging.getLogger('websockets').setLevel(logging.WARNING)
     
     # Get nodriver's event loop
-    loop = uc.loop()
+    loop = _get_nodriver_loop()
     
     async def _start():
         # Find Chrome binary
@@ -296,12 +309,11 @@ def get_browser(headless: bool = True, user_data_dir: Optional[str] = None):
         ]
         chrome_binary = next((p for p in candidates if shutil.which(p)), None)
         
-        # Start browser with timeout and no_sandbox=True (critical!)
+        # Start browser - use same approach as test script
         start_kwargs = {
             'headless': headless,
-            'no_sandbox': True,  # Prevents hangs and connection failures
+            'sandbox': False,
         }
-        
         if chrome_binary:
             start_kwargs['browser_executable_path'] = chrome_binary
         
@@ -313,28 +325,8 @@ def get_browser(headless: bool = True, user_data_dir: Optional[str] = None):
         # Wait a bit for browser to fully initialize
         await asyncio.sleep(1)
         
-        # Get main tab - try different methods
-        try:
-            if hasattr(browser, 'main_tab') and browser.main_tab:
-                page = browser.main_tab
-            elif hasattr(browser, 'tabs') and browser.tabs:
-                # Get first page tab
-                page = next((t for t in browser.tabs if t.type == 'page'), None)
-                if not page:
-                    page = browser.tabs[0] if browser.tabs else None
-            else:
-                # Fallback: navigate to about:blank to get a page
-                page = await asyncio.wait_for(
-                    browser.get('about:blank'),
-                    timeout=10
-                )
-        except Exception as e:
-            logging.debug(f"Error getting main tab: {e}, trying fallback")
-            # Fallback: navigate to about:blank
-            page = await asyncio.wait_for(
-                browser.get('about:blank'),
-                timeout=10
-            )
+        # Get main tab - nodriver's main_tab should be available
+        page = browser.main_tab
         
         return browser, page
     
