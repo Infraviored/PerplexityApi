@@ -6,6 +6,8 @@ import os
 import time
 import logging
 import pyperclip
+import re
+from typing import Optional, Tuple
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
@@ -27,6 +29,76 @@ _logger.setLevel(logging.INFO)  # Default to INFO level
 # Module-level browser instance for persistence
 _browser_manager = None
 _browser_driver = None
+
+
+def _extract_session_id_from_url(url: str) -> Optional[str]:
+    """
+    Extract session ID from Perplexity.ai URL
+    
+    Args:
+        url: The URL to extract session ID from
+        
+    Returns:
+        Session ID if found, None otherwise
+    """
+    # Perplexity URLs typically have format like:
+    # https://www.perplexity.ai/search/... or similar
+    # Try to extract the session identifier from the URL path
+    patterns = [
+        r'/search/([^/?]+)',  # /search/{session_id}
+        r'/thread/([^/?]+)',  # /thread/{session_id}
+        r'[?&]thread=([^&]+)',  # ?thread={session_id}
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    
+    # If no pattern matches, try to get the last meaningful path segment
+    # that's not a common path like 'search', 'thread', etc.
+    path = url.split('?')[0]  # Remove query params
+    segments = [s for s in path.split('/') if s and s not in ['www.perplexity.ai', 'perplexity.ai', 'search', 'thread']]
+    if segments:
+        return segments[-1]
+    
+    return None
+
+
+def _monitor_url_changes(driver, timeout: int = 5, expected_changes: int = 2) -> Tuple[str, Optional[str]]:
+    """
+    Monitor URL changes after submission (non-blocking, quick check)
+    
+    Args:
+        driver: Selenium WebDriver instance
+        timeout: Maximum time to wait for URL changes (reduced to 5s)
+        expected_changes: Number of URL changes to wait for (default: 2)
+        
+    Returns:
+        Tuple of (final_url, session_id)
+    """
+    initial_url = driver.current_url
+    url_changes = []
+    start_time = time.time()
+    last_url = initial_url
+    
+    # Quick check for URL changes (don't wait too long)
+    while time.time() - start_time < timeout:
+        current_url = driver.current_url
+        if current_url != last_url:
+            url_changes.append((time.time() - start_time, current_url))
+            last_url = current_url
+            if len(url_changes) >= expected_changes:
+                break
+        time.sleep(0.1)  # Check every 100ms (faster)
+    
+    # Get final URL and extract session ID
+    final_url = driver.current_url
+    session_id = _extract_session_id_from_url(final_url)
+    
+    # If we didn't get session ID yet, we'll extract it later from the final URL
+    # after response is complete
+    return final_url, session_id
 
 
 def _get_browser_manager(config):
@@ -124,7 +196,7 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
         headless (bool, optional): Override headless mode from config (default: None, uses config)
     
     Returns:
-        str: The response text from Perplexity.ai
+        Tuple[str, Optional[str], str]: (response_text, session_id, final_url)
     """
     # Set logging level based on debug flag
     if debug:
@@ -175,21 +247,26 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
             reasoning = True
     
     # Ensure browser is started
-    log_with_timing("Starting browser...")
     driver = _ensure_browser_started(config)
-    log_with_timing("✓ Browser started")
     
-    # Ensure logged in
-    log_with_timing("Checking login status...")
-    _ensure_logged_in(config)
-    log_with_timing("✓ Logged in")
+    # Skip login check - browser is already logged in from server startup
+    # Only check if we're not on a Perplexity page (indicates browser was just started)
+    try:
+        current_url = driver.current_url
+        if 'perplexity.ai' not in current_url:
+            log_with_timing("Checking login status...")
+            _ensure_logged_in(config)
+    except Exception:
+        # Browser might be invalid, check login
+        log_with_timing("Checking login status...")
+        _ensure_logged_in(config)
     
     # Navigate to Perplexity.ai if not already there
     perplexity_url = config.get('browser', 'perplexity_url')
-    if driver.current_url != perplexity_url and not perplexity_url.split('?')[0] in driver.current_url:
+    base_url = perplexity_url.split('?')[0]
+    if driver.current_url != base_url and not base_url in driver.current_url:
         log_with_timing("Navigating to Perplexity.ai...")
-        driver.get(perplexity_url)
-        log_with_timing("✓ Page loaded")
+        driver.get(base_url)
     
     element_wait_timeout = config.get('perplexity', 'element_wait_timeout') or 30
     wait = WebDriverWait(driver, element_wait_timeout)
@@ -208,6 +285,10 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
             logging.error(f"HTML dumped to: {html_path}")
         except Exception as e:
             logging.error(f"Failed to dump HTML: {e}")
+    
+    # Initialize session tracking variables
+    session_id = None
+    final_url = None
     
     try:
         # Step 1: Wait for page to be ready and find question input
@@ -384,6 +465,11 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
         # Click immediately
         driver.execute_script("arguments[0].click();", submit_button)
         log_with_timing("✓ Question submitted")
+        
+        # Quick check for URL changes (non-blocking, don't wait long)
+        final_url, session_id = _monitor_url_changes(driver, timeout=2, expected_changes=2)
+        if session_id:
+            log_with_timing(f"✓ Session ID extracted: {session_id}")
         
         # Step 5: Wait for response to complete
         log_with_timing("Waiting for result...")
@@ -821,10 +907,234 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
             raise Exception("Could not retrieve response text - HTML dumped for inspection")
         
         log_with_timing(f"✓ Response retrieved ({len(response_text)} characters)")
-        return response_text.strip()
+        
+        # Extract session ID from final URL if we didn't get it earlier
+        if not session_id:
+            final_url = driver.current_url
+            session_id = _extract_session_id_from_url(final_url)
+            if session_id:
+                log_with_timing(f"✓ Session ID extracted from final URL: {session_id}")
+        
+        return response_text.strip(), session_id, final_url
         
     except Exception as e:
         logging.error(f"Error in ask_plexi: {e}", exc_info=True)
+        raise
+
+
+def ask_in_session(question, session_url, model=None, reasoning=None, config=None, debug=False):
+    """
+    Ask a follow-up question in an existing Perplexity.ai session
+    
+    Args:
+        question (str): The follow-up question to ask
+        session_url (str): URL of the existing session
+        model (str, optional): Model to use (default: Claude Sonnet 4.5)
+        reasoning (bool, optional): Enable reasoning mode (default: True)
+        config: Configuration object. If None, loads from config.json
+        debug (bool): Enable debug logging (default: False)
+    
+    Returns:
+        Tuple[str, Optional[str], str]: (response_text, session_id, final_url)
+    """
+    # Set logging level based on debug flag
+    if debug:
+        _logger.setLevel(logging.DEBUG)
+        logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
+    else:
+        _logger.setLevel(logging.INFO)
+        logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    
+    # Initialize timing tracking
+    start_time = time.time()
+    last_step_time = start_time
+    
+    def log_with_timing(message, level='info'):
+        """Log message with time since last step in milliseconds"""
+        nonlocal last_step_time
+        current_time = time.time()
+        elapsed_ms = int((current_time - last_step_time) * 1000)
+        last_step_time = current_time
+        
+        if level == 'info':
+            logging.info(f"[+{elapsed_ms}ms] {message}")
+        elif level == 'debug':
+            logging.debug(f"[+{elapsed_ms}ms] {message}")
+        elif level == 'warning':
+            logging.warning(f"[+{elapsed_ms}ms] {message}")
+        elif level == 'error':
+            logging.error(f"[+{elapsed_ms}ms] {message}")
+    
+    # Load config if not provided
+    if config is None:
+        from .config import load_config
+        config = load_config()
+    
+    # Use defaults from config
+    if model is None:
+        model = config.get('perplexity', 'default_model') or "Claude Sonnet 4.5"
+    if reasoning is None:
+        reasoning = config.get('perplexity', 'default_reasoning')
+        if reasoning is None:
+            reasoning = True
+    
+    # Ensure browser is started (skip login check - we're already logged in from startup)
+    driver = _ensure_browser_started(config)
+    
+    # Navigate to session URL if not already there (no sleep - page is usually ready)
+    if driver.current_url != session_url:
+        log_with_timing(f"Navigating to session URL: {session_url}")
+        driver.get(session_url)
+        time.sleep(0.5)  # Minimal wait for navigation
+    
+    element_wait_timeout = config.get('perplexity', 'element_wait_timeout') or 10
+    wait = WebDriverWait(driver, element_wait_timeout)
+    
+    session_id = _extract_session_id_from_url(session_url)
+    final_url = session_url
+    
+    try:
+        # Find "Ask a follow-up" input field - use direct selector (bottom-most p[dir='auto'])
+        log_with_timing("Finding follow-up input...")
+        
+        # Direct approach: get all inputs and use the last one (bottom-most)
+        all_inputs = driver.find_elements(By.CSS_SELECTOR, "p[dir='auto']")
+        if not all_inputs:
+            # Fallback: wait briefly
+            followup_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "p[dir='auto']")))
+            all_inputs = [followup_input]
+        
+        # Use the last (bottom-most) input
+        followup_input = all_inputs[-1]
+        wait.until(EC.element_to_be_clickable(followup_input))
+        log_with_timing("✓ Follow-up input found")
+        
+        # Enter question text - optimized (no delays)
+        log_with_timing("Entering follow-up question...")
+        driver.execute_script("""
+            var el = arguments[0];
+            var text = arguments[1];
+            el.focus();
+            el.click();
+            el.textContent = text;
+            el.innerText = text;
+            var events = ['input', 'change', 'keyup', 'keydown', 'keypress'];
+            events.forEach(function(eventType) {
+                var event = new Event(eventType, { bubbles: true, cancelable: true });
+                el.dispatchEvent(event);
+            });
+        """, followup_input, question)
+        
+        # Quick verification (no sleep)
+        current_text = driver.execute_script("return arguments[0].textContent || arguments[0].innerText || '';", followup_input)
+        if not current_text or len(current_text.strip()) < len(question) * 0.5:
+            followup_input.clear()
+            followup_input.send_keys(question)
+        
+        log_with_timing(f"✓ Question entered")
+        
+        # Find and click submit button - optimized (no polling, direct find)
+        log_with_timing("Finding submit button...")
+        time.sleep(0.2)  # Minimal wait for UI update
+        
+        submit_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='submit-button'], button[aria-label='Submit']")))
+        log_with_timing("✓ Submit button found, clicking...")
+        driver.execute_script("arguments[0].click();", submit_button)
+        log_with_timing("✓ Follow-up question submitted")
+        
+        # Wait for response (same logic as ask_plexi)
+        log_with_timing("Waiting for response...")
+        response_wait_timeout = 20
+        response_wait_start = time.time()
+        response_content_found = False
+        
+        # Wait for stop button to appear
+        try:
+            stop_button = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((
+                    By.CSS_SELECTOR,
+                    "button[data-testid='stop-generating-response-button']"
+                ))
+            )
+            log_with_timing("Response generation started...")
+        except TimeoutException:
+            log_with_timing("Stop button not found, assuming response is generating...", 'warning')
+        
+        # Wait for completion
+        while time.time() - response_wait_start < response_wait_timeout:
+            stop_button_visible = False
+            try:
+                stop_button = driver.find_element(
+                    By.CSS_SELECTOR,
+                    "button[data-testid='stop-generating-response-button']"
+                )
+                if stop_button.is_displayed():
+                    stop_button_visible = True
+            except NoSuchElementException:
+                stop_button_visible = False
+            
+            if not stop_button_visible:
+                submit_button_disabled = False
+                copy_button_available = False
+                
+                try:
+                    submit_btn = driver.find_element(By.CSS_SELECTOR, "button[data-testid='submit-button']")
+                    disabled_attr = submit_btn.get_attribute("disabled")
+                    if disabled_attr is not None and disabled_attr != "false":
+                        submit_button_disabled = True
+                except NoSuchElementException:
+                    pass
+                
+                try:
+                    # Find all copy buttons and use the bottom-most one
+                    copy_buttons = driver.find_elements(By.CSS_SELECTOR, "button[aria-label='Copy']")
+                    if copy_buttons:
+                        # Use the last (bottom-most) copy button
+                        copy_btn = copy_buttons[-1]
+                        if copy_btn.is_displayed():
+                            copy_button_available = True
+                except NoSuchElementException:
+                    pass
+                
+                if submit_button_disabled and copy_button_available:
+                    response_content_found = True
+                    log_with_timing("Response generation complete!")
+                    break
+            
+            time.sleep(0.5)
+        
+        if not response_content_found:
+            raise TimeoutException("Timeout waiting for response completion")
+        
+        # Extract response using bottom-most copy button
+        log_with_timing("Extracting response...")
+        copy_buttons = driver.find_elements(By.CSS_SELECTOR, "button[aria-label='Copy']")
+        if not copy_buttons:
+            raise Exception("Copy button not found")
+        
+        # Use the bottom-most copy button
+        copy_button = copy_buttons[-1]
+        copy_button.click()
+        time.sleep(0.2)
+        
+        # Get clipboard content
+        clipboard_text = driver.execute_async_script("""
+            var callback = arguments[arguments.length - 1];
+            navigator.clipboard.readText().then(function(text) {
+                callback(text);
+            }).catch(function(err) {
+                callback(null);
+            });
+        """)
+        
+        if not clipboard_text or len(clipboard_text.strip()) < 10:
+            raise Exception("Failed to retrieve response from clipboard")
+        
+        log_with_timing(f"✓ Response retrieved ({len(clipboard_text.strip())} characters)")
+        return clipboard_text.strip(), session_id, final_url
+        
+    except Exception as e:
+        logging.error(f"Error in ask_in_session: {e}", exc_info=True)
         raise
 
 

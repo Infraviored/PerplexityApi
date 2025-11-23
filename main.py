@@ -21,9 +21,11 @@ def main():
     
     try:
         # Use headless=True by default, but allow override via config
-        response = ask_plexi(question, debug=True, headless=headless)
+        response, session_id, url = ask_plexi(question, debug=True, headless=headless)
         print("\nResponse:")
         print(response)
+        if session_id:
+            print(f"\nSession ID: {session_id}")
         print("\n" + "=" * 60)
         print("Response has been copied to clipboard.")
     except Exception as e:
