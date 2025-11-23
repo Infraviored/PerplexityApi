@@ -1,3 +1,4 @@
 undetected-chromedriver
 pyperclip
 xvfbwrapper
+nodriver

@@ -65,8 +65,13 @@ class BrowserManager:
         Start a headless Chromium/Chrome browser and navigate to Perplexity.ai
         
         Returns:
-            webdriver: Undetected Chrome WebDriver instance
+            webdriver: Browser instance (nodriver or undetected-chromedriver)
         """
+        # Check if nodriver is enabled
+        use_nodriver = self.config.get('browser', 'use_nodriver') or False
+        if use_nodriver:
+            return self._start_browser_with_nodriver(headless=True, use_ephemeral=use_ephemeral)
+        
         # Check if Xvfb is enabled
         use_xvfb = self.config.get('browser', 'use_xvfb') or False
         if use_xvfb:
@@ -79,6 +84,11 @@ class BrowserManager:
 
         Primarily used for manual login flows so the user can complete authentication.
         """
+        # Check if nodriver is enabled
+        use_nodriver = self.config.get('browser', 'use_nodriver') or False
+        if use_nodriver:
+            return self._start_browser_with_nodriver(headless=False, use_ephemeral=use_ephemeral)
+        
         return self._start_browser(headless=False, use_ephemeral=use_ephemeral)
     
     def _start_browser_with_xvfb(self, use_ephemeral: bool = False):
@@ -113,6 +123,38 @@ class BrowserManager:
                 except Exception:
                     pass
             raise e
+    
+    def _start_browser_with_nodriver(self, headless: bool = True, use_ephemeral: bool = False):
+        """Start browser using nodriver (better anti-detection)"""
+        try:
+            from .nodriver_wrapper import get_browser
+        except ImportError:
+            logging.error("nodriver not installed. Install with: pip install nodriver")
+            logging.warning("Falling back to undetected-chromedriver")
+            return self._start_browser(headless=headless, use_ephemeral=use_ephemeral)
+        
+        perplexity_url = self.config.get('browser', 'perplexity_url')
+        
+        try:
+            logging.info("Starting browser with nodriver (better anti-detection)...")
+            self.driver = get_browser(headless=headless)
+            self.driver.get(perplexity_url)
+            mode = "Headless" if headless else "Visible"
+            logging.info("%s Chromium/Chrome started with nodriver and navigated to Perplexity.ai", mode)
+            
+            # Wait a bit for page to load
+            time.sleep(1)
+            
+            # Check for Cloudflare
+            if self._check_cloudflare_challenge():
+                logging.info("Cloudflare challenge detected, attempting bypass...")
+                self._bypass_cloudflare()
+            
+            return self.driver
+        except Exception as e:
+            logging.error(f"Failed to start nodriver browser: {e}")
+            # Fallback disabled for now
+            raise
     
     def _start_browser(self, headless: bool = True, use_ephemeral: bool = False):
         """Shared browser launch routine using undetected_chromedriver."""
