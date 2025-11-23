@@ -473,8 +473,8 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
         
         # Step 5: Wait for response to complete
         log_with_timing("Waiting for result...")
-        # Harden timeout to 20 seconds max
-        response_wait_timeout = 20
+        # Get timeout from config (default: 300 seconds)
+        response_wait_timeout = config.get('perplexity', 'response_wait_timeout') or 300
         
         # Wait for stop button to appear (indicates generation started)
         try:
@@ -1044,7 +1044,8 @@ def ask_in_session(question, session_url, model=None, reasoning=None, config=Non
         
         # Wait for response (same logic as ask_plexi)
         log_with_timing("Waiting for response...")
-        response_wait_timeout = 20
+        # Get timeout from config (default: 300 seconds)
+        response_wait_timeout = config.get('perplexity', 'response_wait_timeout') or 300
         response_wait_start = time.time()
         response_content_found = False
         

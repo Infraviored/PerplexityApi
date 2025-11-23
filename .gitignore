@@ -1,3 +1,5 @@
+browser-profile
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -158,11 +160,6 @@ venv.bak/
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
-# Docker volumes
-browser-profile/
-data/
-sessions.json
 
 # Pyre type checker
 .pyre/

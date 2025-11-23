@@ -20,65 +20,47 @@ A lightweight HTTP server that provides programmatic access to Perplexity.ai thr
 
 ## Quick Start
 
-### Option 1: Docker
+### Option 1: Systemd Service (Recommended for Production)
 
-**Important**: First-time setup requires manual login. Choose one of these methods:
-
-#### Method A: X11 Forwarding (Recommended for Docker)
-
-Run the container with X11 forwarding to see the browser and log in:
-
-```bash
-# Build the image
-docker compose build
-
-# Run with X11 forwarding (allows you to see browser for login)
-xhost +local:docker  # Allow Docker to access X11
-docker run -it --rm \
-  -e DISPLAY=$DISPLAY \
-  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
-  -p 8088:8088 \
-  -v $(pwd)/browser-profile:/root/.perplexity-browser-profile \
-  -v $(pwd)/data:/app/data \
-  perplexityapi-perplexity-api \
-  python3 server.py --host 0.0.0.0 --port 8088
-
-# After logging in, stop and run normally with docker compose
-docker compose up -d
-```
-
-#### Method B: Pre-authenticated Profile
-
-Run locally first, then copy the profile:
-
-```bash
-# Step 1: Run locally once to create browser profile with login
-python3 server.py --host localhost --port 8088
-# Log in when browser opens, then stop the server
-
-# Step 2: Copy browser profile to Docker volume location
-mkdir -p browser-profile
-cp -r ~/.perplexity-browser-profile/* browser-profile/ 2>/dev/null || true
-
-# Step 3: Build and run with Docker Compose
-docker compose up -d
-```
-
-#### Method C: Docker Compose (After Initial Login)
-
-Once you have a browser profile (from Method A or B), use docker-compose:
-
-```bash
-docker compose up -d
-```
-
-### Option 2: Local Installation
+Install as a system service that runs automatically:
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Start server
+# Run manual login first (browser will open)
+python3 manual_login.py
+
+# Install as user systemd service (no sudo needed)
+./install-service.sh
+```
+
+The installer will:
+- Create a systemd service file
+- Enable the service to start on boot
+- Optionally start the service immediately
+
+**Service Management:**
+```bash
+# Start/stop/restart service
+systemctl --user start perplexity-api
+systemctl --user stop perplexity-api
+systemctl --user restart perplexity-api
+
+# View logs
+journalctl --user -u perplexity-api -f
+
+# Check status
+systemctl --user status perplexity-api
+```
+
+### Option 2: Manual Run
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Start server manually
 python3 server.py --host localhost --port 8088
 ```
 
@@ -183,52 +165,37 @@ Sessions are automatically tracked and stored in `sessions.json`:
 }
 ```
 
-## Docker Details
+## Systemd Service Details
 
-### Initial Login Setup
+### Installation
 
-**The Challenge**: Perplexity.ai requires manual browser login, which is difficult in a headless Docker container.
+The `install-service.sh` script creates a systemd service that:
+- Runs as the user who executed the installer (via sudo)
+- Automatically restarts on failure
+- Starts on system boot
+- Logs to systemd journal
 
-**Solutions**:
+### Configuration
 
-1. **X11 Forwarding** (Best for Docker): Run container with X11 access to see browser
-2. **Pre-authenticated Profile**: Run locally first, copy profile to Docker
-3. **VNC** (Advanced): Use VNC server in container (not included, but possible)
+The service runs with:
+- Host: `0.0.0.0` (listens on all interfaces)
+- Port: `8088`
+- Working directory: Project root directory
 
-### Building
-
+To change these settings, edit `~/.config/systemd/user/perplexity-api.service` after installation and run:
 ```bash
-docker compose build
-# or
-docker build -t perplexity-api .
+systemctl --user daemon-reload
+systemctl --user restart perplexity-api
 ```
 
-### Running After Login
-
-Once you have a browser profile with login:
-
+**Note:** The service starts automatically when you log in. To enable it to start at boot (without login), run:
 ```bash
-# With docker-compose (recommended)
-docker compose up -d
-
-# Manual run
-docker run -d \
-  --name perplexity-api \
-  -p 8088:8088 \
-  -v $(pwd)/browser-profile:/root/.perplexity-browser-profile \
-  -v $(pwd)/data:/app/data \
-  perplexity-api
+loginctl enable-linger $USER
 ```
-
-### Volumes
-
-- `browser-profile/`: Browser user data (login session persists here)
-- `data/`: Application data (sessions.json stored here)
 
 ### Environment Variables
 
 - `PERPLEXITY_API_URL`: Server URL (for CLI wrapper)
-- `DISPLAY`: X display (set automatically in Docker)
 
 ## Development
 
@@ -239,8 +206,8 @@ python3 server.py --host localhost --port 8088 --debug
 # Test with CLI
 askplexi "test question" --new
 
-# Check server logs
-docker-compose logs -f perplexity-api
+# Check server logs (if running as service)
+journalctl -u perplexity-api -f
 ```
 
 ## Troubleshooting
@@ -249,15 +216,14 @@ docker-compose logs -f perplexity-api
 
 - Check if port 8088 is available
 - Verify browser dependencies are installed
-- Check logs: `docker-compose logs perplexity-api`
+- Check logs: `journalctl --user -u perplexity-api -n 50` (service) or check terminal output (manual run)
 
 ### Login issues
 
-- **Docker**: First run requires manual login. Use X11 forwarding or pre-authenticated profile (see Docker section)
-- **Local**: Browser will open automatically for login on first run
-- Browser profile is saved in `browser-profile/` (Docker) or `~/.perplexity-browser-profile/` (local)
-- Delete profile to force re-login
-- **Docker X11**: Make sure `xhost +local:docker` is run before starting container with X11
+- **First run**: Browser will open automatically for login on first run
+- Browser profile is saved in `~/.perplexity-browser-profile/`
+- Delete profile to force re-login: `rm -rf ~/.perplexity-browser-profile`
+- Run `python3 manual_login.py` to re-authenticate
 
 ### Slow responses
 

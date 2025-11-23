@@ -19,10 +19,6 @@ class SessionManager:
         Args:
             sessions_file: Path to JSON file for session storage
         """
-        # Use data directory if in Docker, otherwise current directory
-        import os
-        if os.path.exists('/app/data'):
-            sessions_file = os.path.join('/app/data', 'sessions.json')
         self.sessions_file = sessions_file
         self._data = self._load()
     
