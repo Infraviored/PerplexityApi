@@ -1,0 +1,26 @@
+# Docker Compose with X11 forwarding for initial login
+# Usage: docker compose -f docker-compose.x11.yml up
+# This allows you to see the browser and complete login manually
+
+services:
+  perplexity-api:
+    build: .
+    container_name: perplexity-api-server
+    ports:
+      - "8088:8088"
+    volumes:
+      # Persist browser profile (login session)
+      - ./browser-profile:/root/.perplexity-browser-profile
+      # Persist session data
+      - ./data:/app/data
+      # X11 socket for display
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    environment:
+      - DISPLAY=${DISPLAY}
+    network_mode: host
+    # Run interactively for initial login
+    stdin_open: true
+    tty: true
+    restart: "no"  # Don't auto-restart, run once for login
+    command: python3 server.py --host 0.0.0.0 --port 8088
+

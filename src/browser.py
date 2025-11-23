@@ -134,14 +134,14 @@ class BrowserManager:
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
         
+        # Docker/container-specific flags
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        
         # Use --headless=new instead of headless parameter for better stealth
         # This makes headless Chrome work exactly like regular Chrome with same backend code
         if headless:
             options.add_argument("--headless=new")
-            # Additional headless stealth arguments
-            options.add_argument("--disable-dev-shm-usage")
-            # Don't disable GPU in new headless mode - it uses real GPU rendering
-            # This is important: --headless=new uses real GPU, so don't disable it
             # Set realistic window size
             options.add_argument("--window-size=1920,1080")
         
