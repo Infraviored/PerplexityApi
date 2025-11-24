@@ -4,6 +4,7 @@ Handles single endpoint: POST /ask
 """
 import json
 import logging
+import re
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
@@ -25,6 +26,81 @@ _session_manager: Optional[SessionManager] = None
 
 # Global config
 _config = None
+
+
+def clean_response_text(text, include_sources=True):
+    """
+    Clean response text by removing citations and URLs unless include_sources is True
+    
+    Args:
+        text: The response text to clean
+        include_sources: If True, keep citations and URLs. If False, remove them.
+    
+    Returns:
+        Cleaned text
+    """
+    if include_sources:
+        return text
+    
+    # Remove citation markers like [1], [2], etc. from the text
+    text = re.sub(r'\[\d+\]', '', text)
+    
+    # Remove URL sections at the bottom
+    # Look for patterns like:
+    # [1](https://...)
+    # (https://...)
+    # or just URLs
+    lines = text.split('\n')
+    cleaned_lines = []
+    in_url_section = False
+    
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        
+        # Check if this line is a URL/citation reference
+        # Patterns:
+        # - [1](https://...)
+        # - (https://...)
+        # - https://...
+        is_url_line = (
+            re.match(r'^\[\d+\]\(https?://', stripped) or
+            re.match(r'^\(https?://', stripped) or
+            re.match(r'^https?://', stripped) or
+            (stripped.startswith('[') and '](http' in stripped) or
+            (stripped.startswith('(') and 'http' in stripped and stripped.endswith(')'))
+        )
+        
+        if is_url_line:
+            in_url_section = True
+            continue
+        
+        # If we're in URL section and hit a blank line, skip it
+        if in_url_section and stripped == '':
+            continue
+        
+        # If we're in URL section and hit content that's not a URL, exit URL section
+        if in_url_section and not is_url_line:
+            # Check if previous lines were URLs - if so, we've exited the URL section
+            in_url_section = False
+            cleaned_lines.append(line)
+            continue
+        
+        if not in_url_section:
+            cleaned_lines.append(line)
+    
+    result = '\n'.join(cleaned_lines).strip()
+    
+    # Clean up any remaining citation markers that might have been missed
+    result = re.sub(r'\s+\[\d+\]', '', result)
+    result = re.sub(r'\[\d+\]\s+', '', result)
+    
+    # Remove URLs in parentheses that might be inline: (https://...)
+    result = re.sub(r'\(https?://[^\)]+\)', '', result)
+    
+    # Remove multiple consecutive blank lines
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    
+    return result.strip()
 
 
 class PerplexityAPIHandler(BaseHTTPRequestHandler):
@@ -83,6 +159,7 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
                 return
             
             new_session = request_data.get('new_session', False)
+            return_sources = request_data.get('return_sources', False)
             
             # Initialize session manager if needed
             if _session_manager is None:
@@ -143,9 +220,12 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
                     if session_id and final_url:
                         _session_manager.create_session(session_id, final_url)
             
+            # Clean response text (remove citations and URLs unless return_sources is True)
+            cleaned_response = clean_response_text(response_text, include_sources=return_sources)
+            
             # Send success response
             response_data = {
-                'response': response_text,
+                'response': cleaned_response,
                 'session_id': session_id
             }
             self._send_json_response(200, response_data)

@@ -18,7 +18,7 @@ def get_server_url():
     return os.environ.get('PERPLEXITY_API_URL', 'http://localhost:8088')
 
 
-def ask_plexi(question, new_session=False, session_id=None):
+def ask_plexi(question, new_session=False, session_id=None, return_sources=False):
     """
     Ask a question to Perplexity.ai via API server
     
@@ -26,6 +26,7 @@ def ask_plexi(question, new_session=False, session_id=None):
         question: The question to ask
         new_session: Create a new session
         session_id: Use specific session ID
+        return_sources: Include citations and URLs in response
         
     Returns:
         Response text
@@ -33,7 +34,8 @@ def ask_plexi(question, new_session=False, session_id=None):
     server_url = get_server_url()
     
     payload = {
-        'question': question
+        'question': question,
+        'return_sources': return_sources
     }
     
     if new_session:
@@ -107,6 +109,12 @@ Examples:
         help='Server URL (default: http://localhost:8088 or PERPLEXITY_API_URL env var)'
     )
     
+    parser.add_argument(
+        '--return-sources',
+        action='store_true',
+        help='Include citations and URLs in the response'
+    )
+    
     args = parser.parse_args()
     
     # Override server URL if provided
@@ -127,7 +135,8 @@ Examples:
     response, session_id = ask_plexi(
         question,
         new_session=args.new,
-        session_id=args.id
+        session_id=args.id,
+        return_sources=args.return_sources
     )
     
     # Print response
