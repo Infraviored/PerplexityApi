@@ -13,10 +13,39 @@ A lightweight HTTP server that provides programmatic access to Perplexity.ai thr
 
 ## Architecture
 
-- **Server** (`server.py`): HTTP server that manages browser and sessions
+- **Server** (`src/server.py`): HTTP server that manages browser and sessions
 - **Session Manager** (`src/session_manager.py`): JSON-based session storage
 - **Perplexity Module** (`src/perplexity.py`): Browser automation logic
-- **CLI Wrapper** (`askplexi`): Command-line interface
+- **CLI Wrapper** (`askplexi` console script): Command-line interface
+
+## Installation
+
+### One-time Setup
+
+Create a virtual environment and install the package:
+
+```bash
+cd /home/schneider/repos_private/PerplexityApi
+python3 -m venv .venv
+source .venv/bin/activate
+pip install .
+```
+
+This installs the console scripts:
+- `perplexity-server` – HTTP API server
+- `askplexi` – CLI wrapper that calls the server
+
+### Make CLI Available System-wide
+
+To use `askplexi` from anywhere without activating the venv:
+
+```bash
+./install-wrapper.sh
+```
+
+This will either:
+- Add `.venv/bin` to your PATH in `~/.bashrc` (recommended), or
+- Create a symlink in `~/.local/bin/askplexi`
 
 ## Quick Start
 
@@ -25,13 +54,7 @@ A lightweight HTTP server that provides programmatic access to Perplexity.ai thr
 Install as a system service that runs automatically:
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run manual login first (browser will open)
-python3 manual_login.py
-
-# Install as user systemd service (no sudo needed)
+# After initial venv setup (see Installation above)
 ./install-service.sh
 ```
 
@@ -57,11 +80,9 @@ systemctl --user status perplexity-api
 ### Option 2: Manual Run
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Start server manually
-python3 server.py --host localhost --port 8088
+# Activate venv and start server
+source .venv/bin/activate
+perplexity-server --host localhost --port 8088
 ```
 
 **Note**: On first run, the browser will open for manual login. After login, subsequent runs will use the saved session.
@@ -108,9 +129,10 @@ curl -X POST http://localhost:8088/ask \
 
 ### Installation
 
+After installing the package (see Installation section above), make `askplexi` available system-wide:
+
 ```bash
-# Make executable and add to PATH
-sudo ln -s $(pwd)/askplexi /usr/local/bin/askplexi
+./install-wrapper.sh
 ```
 
 ### Usage
@@ -125,9 +147,15 @@ askplexi "What is 2+2?" --new
 # Custom server URL
 askplexi "What is 2+2?" --server "http://localhost:9000"
 
+# Or set environment variable
+export PERPLEXITY_API_URL="http://localhost:9000"
+askplexi "What is 2+2?"
+
 # Read from stdin
 echo "What is 2+2?" | askplexi
 ```
+
+The CLI wrapper connects to the server via HTTP on `PERPLEXITY_API_URL` (default: `http://localhost:8088`) or the `--server` flag.
 
 ## Configuration
 
@@ -200,14 +228,17 @@ loginctl enable-linger $USER
 ## Development
 
 ```bash
+# Activate venv
+source .venv/bin/activate
+
 # Run server in debug mode
-python3 server.py --host localhost --port 8088 --debug
+perplexity-server --host localhost --port 8088 --debug
 
 # Test with CLI
 askplexi "test question" --new
 
 # Check server logs (if running as service)
-journalctl -u perplexity-api -f
+journalctl --user -u perplexity-api -f
 ```
 
 ## Troubleshooting

@@ -18,13 +18,6 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
 
-# Detect Python executable
-PYTHON3=$(which python3)
-if [ -z "$PYTHON3" ]; then
-    echo -e "${RED}Error: python3 not found${NC}"
-    exit 1
-fi
-
 # Get current user and home directory
 SERVICE_USER="$USER"
 SERVICE_HOME="$HOME"
@@ -36,7 +29,6 @@ SERVICE_NAME="perplexity-api"
 
 echo "Installation Configuration:"
 echo "  Project directory: $PROJECT_DIR"
-echo "  Python: $PYTHON3"
 echo "  Service user: $SERVICE_USER"
 echo "  Service name: $SERVICE_NAME"
 echo "  Host: $DEFAULT_HOST"
@@ -84,7 +76,7 @@ Type=simple
 WorkingDirectory=$PROJECT_DIR
 Environment="PATH=$PATH"
 Environment="HOME=$SERVICE_HOME"
-ExecStart=$PYTHON3 $PROJECT_DIR/server.py --host $DEFAULT_HOST --port $DEFAULT_PORT
+ExecStart=$PROJECT_DIR/.venv/bin/perplexity-server --host $DEFAULT_HOST --port $DEFAULT_PORT
 Restart=always
 RestartSec=10
 StandardOutput=journal

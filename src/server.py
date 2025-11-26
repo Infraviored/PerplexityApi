@@ -121,9 +121,17 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         """Handle GET requests for health checks"""
         if self.path == '/health' or self.path == '/':
-            self._send_json_response(200, {'status': 'ok', 'service': 'perplexity-api'})
+            data = {
+                'status': 'ok',
+                'service': 'perplexity-api',
+            }
+            self._send_json_response(200, data)
         else:
-            self._send_error_response(404, "Not Found", "Only /ask, /health endpoints are supported")
+            self._send_error_response(
+                404,
+                "Not Found",
+                "Only /ask and /health endpoints are supported",
+            )
     
     def do_POST(self):
         """Handle POST requests"""
@@ -322,10 +330,40 @@ def start_server(host: str = 'localhost', port: int = 8000):
         logger.info("Server stopped")
 
 
-if __name__ == '__main__':
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+def cli_main() -> None:
+    """Console entry point for the HTTP server."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Perplexity.ai API Server")
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="localhost",
+        help="Host to bind to (default: localhost)",
     )
-    start_server()
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to listen on (default: 8000)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging",
+    )
+
+    args = parser.parse_args()
+
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+    start_server(host=args.host, port=args.port)
+
+
+if __name__ == '__main__':
+    cli_main()
 

@@ -6,19 +6,33 @@ import json
 import os
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 
 
 class SessionManager:
     """Manages Perplexity.ai sessions using JSON file storage"""
     
-    def __init__(self, sessions_file: str = "sessions.json"):
+    def __init__(self, sessions_file: Optional[str] = None):
         """
         Initialize session manager
         
         Args:
-            sessions_file: Path to JSON file for session storage
+            sessions_file: Path to JSON file for session storage (default: sessions.json in project root)
         """
+        if sessions_file is None:
+            # Use project root (same logic as config.py)
+            # First, try current working directory (for systemd services with WorkingDirectory set)
+            cwd_sessions = os.path.join(os.getcwd(), "sessions.json")
+            # Use cwd if it exists, or if cwd looks like project root (has config.json or pyproject.toml)
+            if os.path.exists(cwd_sessions) or \
+               os.path.exists(os.path.join(os.getcwd(), "config.json")) or \
+               os.path.exists(os.path.join(os.getcwd(), "pyproject.toml")):
+                sessions_file = cwd_sessions
+            else:
+                # Fall back to sessions.json relative to this file's project root
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                sessions_file = os.path.join(base_dir, "sessions.json")
+        
         self.sessions_file = sessions_file
         self._data = self._load()
     

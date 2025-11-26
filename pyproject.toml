@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "perplexity-api"
+version = "0.1.0"
+description = "Local HTTP API and CLI wrapper around Perplexity.ai using Selenium automation."
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+  { name = "schneider" }
+]
+dependencies = [
+  "undetected-chromedriver",
+  "pyperclip",
+  "xvfbwrapper",
+  "requests",
+]
+
+[project.urls]
+Homepage = "https://example.com/perplexity-api"
+
+[project.scripts]
+perplexity-server = "src.server:cli_main"
+askplexi = "src.cli:main"
+
+[tool.setuptools]
+packages = ["src"]
+package-dir = { "src" = "src" }
+
+

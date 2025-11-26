@@ -17,9 +17,14 @@ class Config:
             config_path (str, optional): Path to config.json file
         """
         if config_path is None:
-            # Default to config.json in project root
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            config_path = os.path.join(base_dir, 'config.json')
+            # First, try current working directory (for systemd services with WorkingDirectory set)
+            cwd_config = os.path.join(os.getcwd(), 'config.json')
+            if os.path.exists(cwd_config):
+                config_path = cwd_config
+            else:
+                # Fall back to config.json in project root (relative to this file)
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                config_path = os.path.join(base_dir, 'config.json')
         
         self.config_path = config_path
         self._config = {}
@@ -45,7 +50,8 @@ class Config:
             "browser": {
                 "perplexity_url": "https://www.perplexity.ai/?login-source=signupButton&login-new=false",
                 "user_data_dir": "~/.perplexity-browser-profile",
-                "headless": False,
+                "headless": True,
+                "use_xvfb": True,
                 "browser_load_wait_seconds": 5,
                 "chrome_driver_path": None,
                 "login_detect_timeout_seconds": 45
