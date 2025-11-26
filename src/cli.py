@@ -88,30 +88,21 @@ def maybe_run_restart() -> None:
         os.system(restart_cmd)
 
 
+def get_xdg_config_dir() -> str:
+    """Get XDG config directory: ~/.config/askplexi/"""
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    if config_home:
+        config_dir = os.path.join(config_home, "askplexi")
+    else:
+        config_dir = os.path.join(os.path.expanduser("~"), ".config", "askplexi")
+    os.makedirs(config_dir, exist_ok=True)
+    return config_dir
+
+
 def find_sessions_file() -> str:
-    """Find sessions.json file in project root (same logic as SessionManager)."""
-    # First, try current working directory
-    cwd_sessions = os.path.join(os.getcwd(), "sessions.json")
-    if os.path.exists(cwd_sessions):
-        return cwd_sessions
-    
-    # Try to find project root by looking for config.json or pyproject.toml
-    current = os.getcwd()
-    for _ in range(5):  # Look up to 5 levels up
-        sessions_path = os.path.join(current, "sessions.json")
-        if os.path.exists(sessions_path):
-            return sessions_path
-        # Check if this looks like project root
-        if os.path.exists(os.path.join(current, "config.json")) or \
-           os.path.exists(os.path.join(current, "pyproject.toml")):
-            return sessions_path
-        parent = os.path.dirname(current)
-        if parent == current:  # Reached filesystem root
-            break
-        current = parent
-    
-    # Fallback to cwd
-    return cwd_sessions
+    """Get sessions.json file path: ~/.config/askplexi/sessions.json"""
+    config_dir = get_xdg_config_dir()
+    return os.path.join(config_dir, "sessions.json")
 
 
 def list_sessions() -> int:

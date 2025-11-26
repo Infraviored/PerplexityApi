@@ -1,9 +1,6 @@
 import time
 
 from selenium.common.exceptions import SessionNotCreatedException
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
 
 from src.browser import BrowserManager
 from src.config import Config
@@ -40,6 +37,31 @@ def main():
             if browser_manager.check_login():
                 success = True
                 print(f"[MANUAL LOGIN] Login detected after {int(elapsed)}s!")
+                
+                # Send one prompt to store the login cookie
+                print("[MANUAL LOGIN] Sending first prompt to store login cookie...")
+                print("[MANUAL LOGIN] This is the first prompt to store the login cookie. Just say 'nice to meet you'")
+                try:
+                    # Set global browser references so ask_plexi uses the existing browser
+                    from src.perplexity import _browser_driver, _browser_manager
+                    import src.perplexity as perplexity_module
+                    perplexity_module._browser_driver = driver
+                    perplexity_module._browser_manager = browser_manager
+                    
+                    from src.perplexity import ask_plexi
+                    # Send the prompt using the current browser instance
+                    response, session_id, final_url = ask_plexi(
+                        "Demo request for cookie storage. Just say 'nice to meet you' - don't Lookup anything.",
+                        config=config,
+                        debug=False,
+                        headless=False  # Keep visible since we're in manual login
+                    )
+                    print("[MANUAL LOGIN] First prompt sent successfully. Login cookie stored.")
+                except Exception as e:
+                    print(f"[MANUAL LOGIN] Warning: Error sending first prompt: {e}")
+                    # Continue anyway - the login was detected
+                
+                print("[MANUAL LOGIN] Session saved. Closing browser...")
                 break
             
             time.sleep(poll_interval)

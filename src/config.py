@@ -6,6 +6,17 @@ import os
 import logging
 
 
+def get_xdg_config_dir() -> str:
+    """Get XDG config directory: ~/.config/askplexi/"""
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    if config_home:
+        config_dir = os.path.join(config_home, "askplexi")
+    else:
+        config_dir = os.path.join(os.path.expanduser("~"), ".config", "askplexi")
+    os.makedirs(config_dir, exist_ok=True)
+    return config_dir
+
+
 class Config:
     """Configuration manager for Perplexity.ai Automation"""
     
@@ -14,17 +25,11 @@ class Config:
         Initialize configuration
         
         Args:
-            config_path (str, optional): Path to config.json file
+            config_path (str, optional): Path to config.json file (default: ~/.config/askplexi/config.json)
         """
         if config_path is None:
-            # First, try current working directory (for systemd services with WorkingDirectory set)
-            cwd_config = os.path.join(os.getcwd(), 'config.json')
-            if os.path.exists(cwd_config):
-                config_path = cwd_config
-            else:
-                # Fall back to config.json in project root (relative to this file)
-                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                config_path = os.path.join(base_dir, 'config.json')
+            config_dir = get_xdg_config_dir()
+            config_path = os.path.join(config_dir, "config.json")
         
         self.config_path = config_path
         self._config = {}
@@ -46,10 +51,17 @@ class Config:
     
     def _get_defaults(self):
         """Get default configuration"""
+        # Get XDG data directory for browser profile
+        data_home = os.environ.get("XDG_DATA_HOME")
+        if data_home:
+            browser_profile = os.path.join(data_home, "askplexi", "browser-profile")
+        else:
+            browser_profile = os.path.join(os.path.expanduser("~"), ".local", "share", "askplexi", "browser-profile")
+        
         return {
             "browser": {
                 "perplexity_url": "https://www.perplexity.ai/?login-source=signupButton&login-new=false",
-                "user_data_dir": "~/.perplexity-browser-profile",
+                "user_data_dir": browser_profile,
                 "headless": True,
                 "use_xvfb": True,
                 "browser_load_wait_seconds": 5,

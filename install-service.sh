@@ -61,6 +61,45 @@ fi
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"
 
+# Create config directory and config file if it doesn't exist
+CONFIG_DIR="$HOME/.config/askplexi"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+mkdir -p "$CONFIG_DIR"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Creating config file..."
+    # Get XDG data directory for browser profile
+    if [ -n "$XDG_DATA_HOME" ]; then
+        BROWSER_PROFILE="$XDG_DATA_HOME/askplexi/browser-profile"
+    else
+        BROWSER_PROFILE="$HOME/.local/share/askplexi/browser-profile"
+    fi
+    
+    cat > "$CONFIG_FILE" <<CONFIGEOF
+{
+  "browser": {
+    "perplexity_url": "https://www.perplexity.ai/?login-source=signupButton&login-new=false",
+    "user_data_dir": "$BROWSER_PROFILE",
+    "headless": true,
+    "use_xvfb": true,
+    "browser_load_wait_seconds": 5,
+    "chrome_driver_path": null,
+    "login_detect_timeout_seconds": 45
+  },
+  "perplexity": {
+    "default_model": "Claude Sonnet 4.5",
+    "default_reasoning": true,
+    "question_input_timeout": 10,
+    "response_wait_timeout": 300,
+    "element_wait_timeout": 30
+  }
+}
+CONFIGEOF
+    echo -e "${GREEN}✓ Config file created: $CONFIG_FILE${NC}"
+else
+    echo -e "${YELLOW}Config file already exists: $CONFIG_FILE${NC}"
+fi
+
 # Create systemd service file
 SERVICE_FILE="$SYSTEMD_USER_DIR/${SERVICE_NAME}.service"
 

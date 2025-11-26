@@ -121,11 +121,85 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         """Handle GET requests for health checks"""
         if self.path == '/health' or self.path == '/':
+            # Check browser state
+            status = 'ok'
+            message = 'Ready'
+            http_status = 200
+            
+            try:
+                from .perplexity import _browser_driver, _browser_manager, _get_browser_manager
+                from .config import load_config
+                
+                # Check if browser is initialized
+                if _browser_driver is None or _browser_manager is None:
+                    status = 'not_ready'
+                    message = 'Browser not yet initialized'
+                    http_status = 503
+                else:
+                    # Check if browser session is valid
+                    try:
+                        _browser_driver.current_url
+                    except Exception:
+                        status = 'not_ready'
+                        message = 'Browser session invalid'
+                        http_status = 503
+                    
+                    # Check for Cloudflare
+                    if status == 'ok':
+                        try:
+                            manager = _get_browser_manager(_config if _config else load_config())
+                            if manager._check_cloudflare_challenge():
+                                status = 'blocked'
+                                message = 'Cloudflare challenge blocking access'
+                                http_status = 503
+                        except Exception as e:
+                            logger.debug(f"Cloudflare check failed: {e}")
+                    
+                    # Check login status
+                    if status == 'ok':
+                        try:
+                            manager = _get_browser_manager(_config if _config else load_config())
+                            if not manager.check_login():
+                                status = 'not_logged_in'
+                                message = 'User not logged in'
+                                http_status = 503
+                        except Exception as e:
+                            logger.debug(f"Login check failed: {e}")
+                            status = 'not_ready'
+                            message = f'Login check failed: {e}'
+                            http_status = 503
+                    
+                    # Check if ready for questions (input field available)
+                    if status == 'ok':
+                        try:
+                            from selenium.webdriver.common.by import By
+                            question_input = _browser_driver.find_elements(By.CSS_SELECTOR, "p[dir='auto']")
+                            if not question_input or not any(inp.is_displayed() for inp in question_input):
+                                status = 'not_ready'
+                                message = 'Input field not ready'
+                                http_status = 503
+                        except Exception as e:
+                            logger.debug(f"Input field check failed: {e}")
+                            status = 'not_ready'
+                            message = f'Input field check failed: {e}'
+                            http_status = 503
+                            
+            except Exception as e:
+                logger.error(f"Health check error: {e}", exc_info=True)
+                status = 'error'
+                message = f'Health check failed: {e}'
+                http_status = 503
+            
             data = {
-                'status': 'ok',
+                'status': status,
                 'service': 'perplexity-api',
+                'message': message,
             }
-            self._send_json_response(200, data)
+            
+            if http_status == 200:
+                self._send_json_response(200, data)
+            else:
+                self._send_error_response(http_status, status.replace('_', ' ').title(), message)
         else:
             self._send_error_response(
                 404,
@@ -239,8 +313,18 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
             self._send_json_response(200, response_data)
             
         except Exception as e:
+            error_msg = str(e)
             logger.error(f"Error processing request: {e}", exc_info=True)
-            self._send_error_response(500, "Internal Server Error", str(e))
+            
+            # Check if it's a Cloudflare error - return 503 with clear message
+            if "Cloudflare" in error_msg:
+                self._send_error_response(
+                    503, 
+                    "Cloudflare Challenge", 
+                    error_msg
+                )
+            else:
+                self._send_error_response(500, "Internal Server Error", error_msg)
         finally:
             _request_lock.release()
     
@@ -277,42 +361,76 @@ def start_server(host: str = 'localhost', port: int = 8000):
     _config = load_config()
     _session_manager = SessionManager()
     
-    # Initialize browser at startup - navigate to main page
-    logger.info("Initializing browser...")
-    try:
-        driver = _ensure_browser_started(_config)
-        logger.info("Browser started")
-        
-        _ensure_logged_in(_config)
-        logger.info("Login verified")
-        
-        # Navigate to main Perplexity page and wait for input to be ready
-        perplexity_url = _config.get('browser', 'perplexity_url')
-        base_url = perplexity_url.split('?')[0]  # Remove query params
-        if driver.current_url != base_url and not base_url in driver.current_url:
-            logger.info(f"Navigating to main page: {base_url}")
-            driver.get(base_url)
-        
-        # Wait for input field to be ready (this is the slow part, do it at startup)
-        logger.info("Waiting for input field to be ready...")
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.webdriver.support import expected_conditions as EC
-        import time
-        
-        wait = WebDriverWait(driver, 30)
+    # Initialize browser at startup - navigate to main page (non-blocking)
+    # Start HTTP server first, then initialize browser in background
+    logger.info("Starting browser initialization (non-blocking)...")
+    
+    def init_browser():
         try:
-            question_input = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "p[dir='auto']"))
-            )
-            wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "p[dir='auto']")))
-            logger.info("✓ Browser initialized and ready - input field available")
+            driver = _ensure_browser_started(_config)
+            logger.info("Browser started")
+            
+            try:
+                _ensure_logged_in(_config)
+                logger.info("Login verified")
+            except Exception as e:
+                logger.warning(f"Login check failed: {e}")
+                logger.warning("Login can be completed on first request")
+            
+            # Navigate to main Perplexity page and wait for input to be ready
+            perplexity_url = _config.get('browser', 'perplexity_url')
+            base_url = perplexity_url.split('?')[0]  # Remove query params
+            if driver.current_url != base_url and not base_url in driver.current_url:
+                logger.info(f"Navigating to main page: {base_url}")
+                driver.get(base_url)
+            
+            # Wait for input field to be ready (this is the slow part, do it at startup)
+            logger.info("Waiting for input field to be ready...")
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+            import time
+            
+            wait = WebDriverWait(driver, 30)
+            try:
+                question_input = wait.until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "p[dir='auto']"))
+                )
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "p[dir='auto']")))
+                logger.info("✓ Browser initialized and ready - input field available")
+            except Exception as e:
+                logger.warning(f"Input field not ready yet: {e}")
+                logger.info("Browser initialized (input will be ready on first request)")
         except Exception as e:
-            logger.warning(f"Input field not ready yet: {e}")
-            logger.info("Browser initialized (input will be ready on first request)")
-    except Exception as e:
-        logger.error(f"Failed to initialize browser: {e}", exc_info=True)
-        raise
+            logger.error(f"Failed to initialize browser: {e}", exc_info=True)
+            logger.warning("Server will continue - browser can be initialized on first request")
+    
+    # Start browser initialization in background thread
+    import threading
+    browser_thread = threading.Thread(target=init_browser, daemon=True)
+    browser_thread.start()
+    logger.info("Browser initialization started in background")
+    
+    # Wait up to 30 seconds for browser to be ready (or until ready)
+    logger.info("Waiting for browser to initialize (max 30s)...")
+    import time
+    start_wait = time.time()
+    max_wait = 30
+    while time.time() - start_wait < max_wait:
+        try:
+            from .perplexity import _browser_driver
+            if _browser_driver is not None:
+                try:
+                    _browser_driver.current_url
+                    logger.info("Browser is ready")
+                    break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        time.sleep(1)
+    else:
+        logger.warning(f"Browser not ready after {max_wait}s, continuing anyway")
     
     # Start HTTP server
     server_address = (host, port)

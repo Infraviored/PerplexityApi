@@ -6,7 +6,18 @@ import json
 import os
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any
+
+
+def get_xdg_config_dir() -> str:
+    """Get XDG config directory: ~/.config/askplexi/"""
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    if config_home:
+        config_dir = os.path.join(config_home, "askplexi")
+    else:
+        config_dir = os.path.join(os.path.expanduser("~"), ".config", "askplexi")
+    os.makedirs(config_dir, exist_ok=True)
+    return config_dir
 
 
 class SessionManager:
@@ -17,21 +28,11 @@ class SessionManager:
         Initialize session manager
         
         Args:
-            sessions_file: Path to JSON file for session storage (default: sessions.json in project root)
+            sessions_file: Path to JSON file for session storage (default: ~/.config/askplexi/sessions.json)
         """
         if sessions_file is None:
-            # Use project root (same logic as config.py)
-            # First, try current working directory (for systemd services with WorkingDirectory set)
-            cwd_sessions = os.path.join(os.getcwd(), "sessions.json")
-            # Use cwd if it exists, or if cwd looks like project root (has config.json or pyproject.toml)
-            if os.path.exists(cwd_sessions) or \
-               os.path.exists(os.path.join(os.getcwd(), "config.json")) or \
-               os.path.exists(os.path.join(os.getcwd(), "pyproject.toml")):
-                sessions_file = cwd_sessions
-            else:
-                # Fall back to sessions.json relative to this file's project root
-                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                sessions_file = os.path.join(base_dir, "sessions.json")
+            config_dir = get_xdg_config_dir()
+            sessions_file = os.path.join(config_dir, "sessions.json")
         
         self.sessions_file = sessions_file
         self._data = self._load()

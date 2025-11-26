@@ -157,15 +157,27 @@ echo "What is 2+2?" | askplexi
 
 The CLI wrapper connects to the server via HTTP on `PERPLEXITY_API_URL` (default: `http://localhost:8088`) or the `--server` flag.
 
+## File Locations
+
+All user data is stored in XDG Base Directory locations (following Linux standards):
+
+- **Config file**: `~/.config/askplexi/config.json` - User configuration
+- **Sessions file**: `~/.config/askplexi/sessions.json` - Session tracking data
+- **Browser profile**: `~/.local/share/askplexi/browser-profile/` - Chrome user data (cookies, cache, etc.)
+
+These directories are created automatically on first run. The XDG specification ensures:
+- Config files are in `~/.config/` (user-editable settings)
+- Data files are in `~/.local/share/` (application-generated data)
+
 ## Configuration
 
-Edit `config.json` to customize:
+Edit `~/.config/askplexi/config.json` to customize:
 
 ```json
 {
   "browser": {
     "perplexity_url": "https://www.perplexity.ai/",
-    "user_data_dir": "~/.perplexity-browser-profile",
+    "user_data_dir": "~/.local/share/askplexi/browser-profile",
     "headless": true,
     "use_xvfb": true
   },
@@ -176,10 +188,18 @@ Edit `config.json` to customize:
 }
 ```
 
+**Note**: The config file is created automatically on first run with defaults. You can edit it to customize behavior.
+
 ## Session Management
 
-Sessions are automatically tracked and stored in `sessions.json`:
+Sessions are automatically tracked and stored in `~/.config/askplexi/sessions.json`.
 
+List all sessions:
+```bash
+askplexi --sessions
+```
+
+Session data structure:
 ```json
 {
   "sessions": {
@@ -252,8 +272,8 @@ journalctl --user -u perplexity-api -f
 ### Login issues
 
 - **First run**: Browser will open automatically for login on first run
-- Browser profile is saved in `~/.perplexity-browser-profile/`
-- Delete profile to force re-login: `rm -rf ~/.perplexity-browser-profile`
+- Browser profile is saved in `~/.local/share/askplexi/browser-profile/`
+- Delete profile to force re-login: `rm -rf ~/.local/share/askplexi/browser-profile`
 - Run `python3 manual_login.py` to re-authenticate
 
 ### Slow responses
