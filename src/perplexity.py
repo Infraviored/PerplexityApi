@@ -12,7 +12,12 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import (
+    TimeoutException,
+    NoSuchElementException,
+    InvalidElementStateException,
+    StaleElementReferenceException,
+)
 
 from .browser import BrowserManager
 
@@ -300,14 +305,21 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
         start_time = time.time()
         question_input = None
         
+        input_selector = "p[dir='auto']"
+        
         while time.time() - start_time < input_timeout:
             try:
-                question_input = driver.find_element(By.CSS_SELECTOR, "p[dir='auto']")
+                question_input = driver.find_element(By.CSS_SELECTOR, input_selector)
                 if question_input and question_input.is_displayed():
                     # Wait for it to be interactable
-                    wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "p[dir='auto']")))
+                    try:
+                        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, input_selector)))
+                    except StaleElementReferenceException:
+                        question_input = None
+                        continue
                     break
-            except Exception:
+            except (NoSuchElementException, StaleElementReferenceException):
+                question_input = None
                 pass
             time.sleep(0.5)
         
@@ -322,7 +334,8 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
         log_with_timing("Pasting question...")
         
         # Method 1: Direct JavaScript (works in headless)
-        driver.execute_script("""
+        def _set_text_via_js(element, text):
+            driver.execute_script("""
             var el = arguments[0];
             var text = arguments[1];
             el.focus();
@@ -336,7 +349,9 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
                 var event = new Event(eventType, { bubbles: true, cancelable: true });
                 el.dispatchEvent(event);
             });
-        """, question_input, question)
+        """, element, text)
+        
+        _set_text_via_js(question_input, question)
         time.sleep(0.3)
         
         # Verify text was entered
@@ -348,14 +363,28 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
         if not current_text or len(current_text.strip()) < len(question) * 0.5:
             if debug:
                 logging.debug("JS method didn't work, trying Selenium send_keys...")
-            # Method 2: Selenium send_keys (works better in some cases)
+            # Method 2: Selenium send_keys with safe clearing
             try:
-                question_input.clear()
+                try:
+                    question_input.clear()
+                except InvalidElementStateException:
+                    _set_text_via_js(question_input, "")
                 question_input.send_keys(question)
                 time.sleep(0.3)
                 current_text = driver.execute_script("return arguments[0].textContent || arguments[0].innerText || '';", question_input)
                 if debug:
                     logging.debug(f"After send_keys, text is: '{current_text}' (length: {len(current_text)})")
+            except (InvalidElementStateException, StaleElementReferenceException) as e:
+                if debug:
+                    logging.debug(f"send_keys failed: {e}, retrying with fresh element")
+                try:
+                    question_input = driver.find_element(By.CSS_SELECTOR, input_selector)
+                    question_input.send_keys(question)
+                    time.sleep(0.3)
+                    current_text = driver.execute_script("return arguments[0].textContent || arguments[0].innerText || '';", question_input)
+                except Exception as inner_e:
+                    if debug:
+                        logging.debug(f"send_keys retry failed: {inner_e}")
             except Exception as e:
                 if debug:
                     logging.debug(f"send_keys failed: {e}")

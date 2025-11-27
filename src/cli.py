@@ -52,19 +52,25 @@ def call_server(
     return data.get("response", ""), data.get("session_id")
 
 
-def run_health_check(server_url: str) -> tuple[bool, dict | None]:
+def run_health_check(server_url: str) -> tuple[bool, dict | None, int | None]:
     """
-    Call the /health endpoint and return (ok, json_payload_or_none).
+    Call the /health endpoint and return (ok, payload_or_none, status_code).
     """
     try:
         resp = requests.get(f"{server_url}/health", timeout=10)
-        if resp.status_code != 200:
-            return False, None
-        payload = resp.json()
-        status = str(payload.get("status", "")).lower()
-        return status == "ok", payload
-    except Exception:
-        return False, None
+        payload = None
+        try:
+            payload = resp.json()
+        except ValueError:
+            if resp.text:
+                payload = {"message": resp.text.strip()}
+        status_value = ""
+        if isinstance(payload, dict):
+            status_value = str(payload.get("status", payload.get("error", ""))).lower()
+        ok = resp.status_code == 200 and status_value == "ok"
+        return ok, payload, resp.status_code
+    except Exception as exc:
+        return False, {"error": str(exc)}, None
 
 
 def maybe_run_restart() -> None:
@@ -188,15 +194,6 @@ Examples:
         help="Use specific session ID (currently treated as new session)",
     )
     parser.add_argument(
-        "--server",
-        metavar="URL",
-        default=None,
-        help=(
-            "Server URL "
-            "(default: http://localhost:8088 or PERPLEXITY_API_URL env var)"
-        ),
-    )
-    parser.add_argument(
         "--return-sources",
         action="store_true",
         help="Include citations and URLs in the response",
@@ -206,16 +203,49 @@ Examples:
         action="store_true",
         help="List all sessions from sessions.json",
     )
+    parser.add_argument(
+        "--health",
+        action="store_true",
+        help="Check server health status and exit",
+    )
+    parser.add_argument(
+        "--manual-login",
+        action="store_true",
+        help="Open a visible browser window to re-authenticate Perplexity",
+    )
 
     args = parser.parse_args(argv)
     
     # Handle --sessions flag (exit early)
     if args.sessions:
         return list_sessions()
+    
+    server_url = get_server_url()
 
-    # Override server URL if provided
-    if args.server:
-        os.environ["PERPLEXITY_API_URL"] = args.server
+    # Handle --health flag
+    if args.health:
+        ok, payload, status_code = run_health_check(server_url)
+        if payload:
+            print(json.dumps(payload, indent=2))
+        if ok:
+            print("Health: OK")
+            return 0
+        reason = "unknown issue"
+        if isinstance(payload, dict):
+            reason = payload.get("message") or payload.get("error") or str(payload)
+        print(f"Health: FAIL ({reason})")
+        if status_code:
+            print(f"HTTP status: {status_code}")
+        maybe_run_restart()
+        return 1
+
+    if args.manual_login:
+        try:
+            from manual_login import main as manual_login_main
+            manual_login_main()
+            return 0
+        except SystemExit as exc:
+            return exc.code or 0
 
     # Get question from argument or stdin
     if args.question:
@@ -225,8 +255,6 @@ Examples:
         if not question:
             parser.print_help()
             return 1
-
-    server_url = get_server_url()
 
     try:
         response_text, session_id = call_server(

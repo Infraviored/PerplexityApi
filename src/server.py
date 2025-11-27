@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 from typing import Optional
@@ -366,44 +367,50 @@ def start_server(host: str = 'localhost', port: int = 8000):
     logger.info("Starting browser initialization (non-blocking)...")
     
     def init_browser():
-        try:
-            driver = _ensure_browser_started(_config)
-            logger.info("Browser started")
-            
+        retry_delay = 15
+        while True:
             try:
-                _ensure_logged_in(_config)
-                logger.info("Login verified")
+                driver = _ensure_browser_started(_config)
+                logger.info("Browser started")
+                
+                try:
+                    _ensure_logged_in(_config)
+                    logger.info("Login verified")
+                except Exception as e:
+                    logger.warning(f"Login check failed: {e}")
+                    logger.warning("Login can be completed on first request")
+                
+                # Navigate to main Perplexity page and wait for input to be ready
+                perplexity_url = _config.get('browser', 'perplexity_url')
+                base_url = perplexity_url.split('?')[0]  # Remove query params
+                if driver.current_url != base_url and not base_url in driver.current_url:
+                    logger.info(f"Navigating to main page: {base_url}")
+                    driver.get(base_url)
+                
+                # Wait for input field to be ready (this is the slow part, do it at startup)
+                logger.info("Waiting for input field to be ready...")
+                from selenium.webdriver.common.by import By
+                from selenium.webdriver.support.ui import WebDriverWait
+                from selenium.webdriver.support import expected_conditions as EC
+                import time
+                
+                wait = WebDriverWait(driver, 30)
+                try:
+                    question_input = wait.until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "p[dir='auto']"))
+                    )
+                    wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "p[dir='auto']")))
+                    logger.info("✓ Browser initialized and ready - input field available")
+                except Exception as e:
+                    logger.warning(f"Input field not ready yet: {e}")
+                    logger.info("Browser initialized (input will be ready on first request)")
+                
+                # Once we reached this point, break out of retry loop
+                break
             except Exception as e:
-                logger.warning(f"Login check failed: {e}")
-                logger.warning("Login can be completed on first request")
-            
-            # Navigate to main Perplexity page and wait for input to be ready
-            perplexity_url = _config.get('browser', 'perplexity_url')
-            base_url = perplexity_url.split('?')[0]  # Remove query params
-            if driver.current_url != base_url and not base_url in driver.current_url:
-                logger.info(f"Navigating to main page: {base_url}")
-                driver.get(base_url)
-            
-            # Wait for input field to be ready (this is the slow part, do it at startup)
-            logger.info("Waiting for input field to be ready...")
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-            import time
-            
-            wait = WebDriverWait(driver, 30)
-            try:
-                question_input = wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "p[dir='auto']"))
-                )
-                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "p[dir='auto']")))
-                logger.info("✓ Browser initialized and ready - input field available")
-            except Exception as e:
-                logger.warning(f"Input field not ready yet: {e}")
-                logger.info("Browser initialized (input will be ready on first request)")
-        except Exception as e:
-            logger.error(f"Failed to initialize browser: {e}", exc_info=True)
-            logger.warning("Server will continue - browser can be initialized on first request")
+                logger.error(f"Failed to initialize browser: {e}", exc_info=True)
+                logger.warning(f"Retrying browser initialization in {retry_delay}s...")
+                time.sleep(retry_delay)
     
     # Start browser initialization in background thread
     import threading
