@@ -1,9 +1,99 @@
+import os
+import subprocess
 import time
 
 from selenium.common.exceptions import SessionNotCreatedException
 
 from .browser import BrowserManager
 from .config import Config
+
+DEFAULT_SERVICE_NAME = "perplexity-api"
+SERVICE_ENV_VAR = "PERPLEXITY_SERVICE_NAME"
+
+
+def _run_systemctl(args, capture: bool = True) -> subprocess.CompletedProcess:
+    """
+    Run a systemctl --user command.
+
+    We capture stdout/stderr for better error reporting but keep failures non-fatal.
+    """
+    full_cmd = ["systemctl", "--user", *args]
+    kwargs: dict = {"check": False}
+    if capture:
+        kwargs["capture_output"] = True
+        kwargs["text"] = True
+    try:
+        return subprocess.run(full_cmd, **kwargs)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(full_cmd, returncode=127)
+
+
+def get_service_name() -> str:
+    """Resolve the systemd service name to manage during manual login."""
+    return os.environ.get(SERVICE_ENV_VAR, DEFAULT_SERVICE_NAME)
+
+
+def is_service_active(service_name: str) -> bool:
+    """Return True if the user service is currently active."""
+    result = _run_systemctl(["is-active", "--quiet", service_name], capture=False)
+    return result.returncode == 0
+
+
+def stop_service(service_name: str) -> bool:
+    """
+    Stop the service if it is running.
+
+    Returns True if the service was active before this call (regardless of stop success).
+    """
+    if not is_service_active(service_name):
+        print(
+            f"[MANUAL LOGIN] Service '{service_name}' is not running; skipping stop step."
+        )
+        return False
+
+    print(f"[MANUAL LOGIN] Detected running service '{service_name}'. Stopping to avoid profile conflicts...")
+    result = _run_systemctl(["stop", service_name])
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        print(
+            f"[MANUAL LOGIN] Warning: Could not stop service '{service_name}' "
+            f"(exit {result.returncode}). Manual intervention may be required."
+        )
+        if stderr:
+            print(f"[MANUAL LOGIN] systemctl output: {stderr}")
+    else:
+        # Wait briefly for the service to fully stop.
+        for _ in range(10):
+            if not is_service_active(service_name):
+                break
+            time.sleep(0.5)
+        print(f"[MANUAL LOGIN] Service '{service_name}' stopped.")
+    return True
+
+
+def start_service(service_name: str) -> None:
+    """Start the service and wait until systemd reports it active."""
+    print(f"[MANUAL LOGIN] Restarting service '{service_name}'...")
+    result = _run_systemctl(["start", service_name])
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        print(
+            f"[MANUAL LOGIN] Warning: Failed to start service '{service_name}' "
+            f"(exit {result.returncode}). Please start it manually."
+        )
+        if stderr:
+            print(f"[MANUAL LOGIN] systemctl output: {stderr}")
+        return
+
+    for _ in range(20):
+        if is_service_active(service_name):
+            print(f"[MANUAL LOGIN] Service '{service_name}' is running again.")
+            return
+        time.sleep(0.5)
+    print(
+        f"[MANUAL LOGIN] Warning: Service '{service_name}' did not report active status. "
+        "Check systemctl logs manually."
+    )
 
 
 def run_first_prompt(driver, browser_manager, config):
@@ -23,7 +113,7 @@ def run_first_prompt(driver, browser_manager, config):
         from .perplexity import ask_plexi
 
         response, session_id, final_url = ask_plexi(
-            "Demo request for cookie storage. Just say 'nice to meet you' - don't Lookup anything.",
+            "Just say 'nice to meet you' - don't Lookup anything.",
             config=config,
             debug=False,
             headless=False,
@@ -35,6 +125,9 @@ def run_first_prompt(driver, browser_manager, config):
 
 def main():
     print("[MANUAL LOGIN] Starting Chromium/Chrome in visible mode for manual login...")
+
+    service_name = get_service_name()
+    stop_service(service_name)
 
     config = Config()
     browser_manager = BrowserManager(config)
@@ -83,6 +176,8 @@ def main():
             browser_manager.close()
         except Exception:
             pass
+        # Always attempt to restart the service to keep the API available after login.
+        start_service(service_name)
 
     if success:
         print("[MANUAL LOGIN] Login session saved. You can now use ask_plexi() in headless mode.")
