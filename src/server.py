@@ -14,6 +14,7 @@ from .perplexity import ask_plexi, ask_in_session, close_browser
 from .perplexity import _ensure_browser_started, _ensure_logged_in
 from .session_manager import SessionManager
 from .config import load_config
+from .systemd_notify import SdNotifier
 
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,13 @@ _session_manager: Optional[SessionManager] = None
 
 # Global config
 _config = None
+
+# Systemd notifier
+_notifier: Optional[SdNotifier] = None
+def _set_status(message: str) -> None:
+    """Update systemd status if sd_notify is available."""
+    if _notifier and _notifier.available():
+        _notifier.status(message)
 
 
 def clean_response_text(text, include_sources=True):
@@ -151,6 +159,7 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
                             if manager._check_cloudflare_challenge():
                                 status = 'blocked'
                                 message = 'Cloudflare challenge blocking access'
+                                _set_status("Blocked by Cloudflare challenge – manual login required")
                                 http_status = 503
                         except Exception as e:
                             logger.debug(f"Cloudflare check failed: {e}")
@@ -167,6 +176,7 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
                             logger.debug(f"Login check failed: {e}")
                             status = 'not_ready'
                             message = f'Login check failed: {e}'
+                            _set_status(f"Login check failed: {e}")
                             http_status = 503
                     
                     # Check if ready for questions (input field available)
@@ -182,12 +192,14 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
                             logger.debug(f"Input field check failed: {e}")
                             status = 'not_ready'
                             message = f'Input field check failed: {e}'
+                            _set_status("Input field not ready – waiting for Perplexity UI")
                             http_status = 503
                             
             except Exception as e:
                 logger.error(f"Health check error: {e}", exc_info=True)
                 status = 'error'
                 message = f'Health check failed: {e}'
+                _set_status(f"Health check error: {e}")
                 http_status = 503
             
             data = {
@@ -219,6 +231,7 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
         # Handle one request at a time
         if not _request_lock.acquire(blocking=False):
             self._send_error_response(503, "Service Unavailable", "Server is busy processing another request")
+            _set_status("Busy – already processing another request")
             return
         
         try:
@@ -255,6 +268,7 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
             if new_session:
                 # Create new session
                 logger.info(f"Creating new session for question: {question[:50]}...")
+                _set_status("Processing question (new session)")
                 response_text, session_id, final_url = ask_plexi(
                     question,
                     config=_config,
@@ -272,6 +286,7 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
                     session_url = _session_manager.get_session_url(current_session_id)
                     if session_url:
                         logger.info(f"Continuing in session {current_session_id} for question: {question[:50]}...")
+                        _set_status(f"Processing question (session {current_session_id[:8]})")
                         response_text, session_id, final_url = ask_in_session(
                             question,
                             session_url,
@@ -282,6 +297,7 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
                     else:
                         # Session URL not found, create new session
                         logger.info(f"Session URL not found, creating new session for question: {question[:50]}...")
+                        _set_status("Processing question (session URL missing – new session)")
                         response_text, session_id, final_url = ask_plexi(
                             question,
                             config=_config,
@@ -293,6 +309,7 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
                 else:
                     # No current session, create new one
                     logger.info(f"No current session, creating new session for question: {question[:50]}...")
+                    _set_status("Processing question (no active session)")
                     response_text, session_id, final_url = ask_plexi(
                         question,
                         config=_config,
@@ -311,10 +328,12 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
                 'session_id': session_id
             }
             self._send_json_response(200, response_data)
+            _set_status("Idle – browser ready for questions")
             
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Error processing request: {e}", exc_info=True)
+            _set_status(f"Error while processing request: {error_msg or 'see logs'}")
             
             # Check if it's a Cloudflare error - return 503 with clear message
             if "Cloudflare" in error_msg:
@@ -358,21 +377,29 @@ def start_server(host: str = 'localhost', port: int = 8000):
     global _config, _session_manager
     
     # Initialize config and session manager
+    global _notifier
+    _notifier = SdNotifier()
+    _set_status("Loading configuration...")
+
     _config = load_config()
     _session_manager = SessionManager()
     
     # Initialize browser at startup - navigate to main page (non-blocking)
     # Start HTTP server first, then initialize browser in background
     logger.info("Starting browser initialization (non-blocking)...")
-    
+
+    browser_ready_event = threading.Event()
+
     def init_browser():
         retry_delay = 15
         while True:
             try:
+                _set_status("Starting headless browser session...")
                 driver = _ensure_browser_started(_config)
                 logger.info("Browser started")
                 
                 try:
+                    _set_status("Verifying Perplexity login state...")
                     _ensure_logged_in(_config)
                     logger.info("Login verified")
                 except Exception as e:
@@ -387,6 +414,7 @@ def start_server(host: str = 'localhost', port: int = 8000):
                     driver.get(base_url)
                 
                 # Wait for input field to be ready (this is the slow part, do it at startup)
+                _set_status("Waiting for Perplexity input field to become ready...")
                 logger.info("Waiting for input field to be ready...")
                 from selenium.webdriver.common.by import By
                 from selenium.webdriver.support.ui import WebDriverWait
@@ -399,19 +427,24 @@ def start_server(host: str = 'localhost', port: int = 8000):
                     )
                     wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "p[dir='auto']")))
                     logger.info("✓ Browser initialized and ready - input field available")
+                    _set_status("Idle – browser ready for questions")
                 except Exception as e:
                     logger.warning(f"Input field not ready yet: {e}")
                     logger.info("Browser initialized (input will be ready on first request)")
+                    _set_status("Browser initialized; waiting for first request to finish setup")
                 
                 # Once we reached this point, break out of retry loop
+                browser_ready_event.set()
                 break
             except Exception as e:
                 logger.error(f"Failed to initialize browser: {e}", exc_info=True)
                 logger.warning(f"Retrying browser initialization in {retry_delay}s...")
+                _set_status(f"Browser init failed ({e}); retrying in {retry_delay}s")
+                if _notifier:
+                    _notifier.extend_timeout(retry_delay)
                 time.sleep(retry_delay)
     
     # Start browser initialization in background thread
-    import threading
     browser_thread = threading.Thread(target=init_browser, daemon=True)
     browser_thread.start()
     logger.info("Browser initialization started in background")
@@ -439,7 +472,15 @@ def start_server(host: str = 'localhost', port: int = 8000):
     # Start HTTP server
     server_address = (host, port)
     httpd = HTTPServer(server_address, PerplexityAPIHandler)
+
+    def signal_ready_when_browser_ready():
+        browser_ready_event.wait()
+        if _notifier:
+            _notifier.ready("Idle – browser ready for questions")
+
+    threading.Thread(target=signal_ready_when_browser_ready, daemon=True).start()
     
+    _set_status("Starting HTTP server...")
     logger.info(f"Perplexity API server starting on http://{host}:{port}")
     logger.info("Press Ctrl+C to stop the server")
     

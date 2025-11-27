@@ -222,6 +222,8 @@ The `install-service.sh` script creates a systemd service that:
 - Automatically restarts on failure
 - Starts on system boot
 - Logs to systemd journal
+- Uses `Type=notify` so the service stays in the *activating* state until the
+  headless browser is fully ready to accept questions
 
 ### Configuration
 

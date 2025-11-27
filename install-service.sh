@@ -111,7 +111,9 @@ Description=Perplexity API Server
 After=network.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=600
 WorkingDirectory=$PROJECT_DIR
 Environment="PATH=$PATH"
 Environment="HOME=$SERVICE_HOME"
