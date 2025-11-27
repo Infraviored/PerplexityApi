@@ -43,7 +43,6 @@ def main():
                 print("[MANUAL LOGIN] This is the first prompt to store the login cookie. Just say 'nice to meet you'")
                 try:
                     # Set global browser references so ask_plexi uses the existing browser
-                    from src.perplexity import _browser_driver, _browser_manager
                     import src.perplexity as perplexity_module
                     perplexity_module._browser_driver = driver
                     perplexity_module._browser_manager = browser_manager

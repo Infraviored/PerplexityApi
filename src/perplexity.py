@@ -1,8 +1,6 @@
 """
 Perplexity.ai automation module
 """
-import json
-import os
 import time
 import logging
 import pyperclip
@@ -220,7 +218,7 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
         nonlocal last_step_time
         current_time = time.time()
         elapsed_ms = int((current_time - last_step_time) * 1000)
-        total_elapsed = int((current_time - start_time) * 1000)
+        int((current_time - start_time) * 1000)
         last_step_time = current_time
         
         if level == 'info':
@@ -269,7 +267,7 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
     # Navigate to Perplexity.ai if not already there
     perplexity_url = config.get('browser', 'perplexity_url')
     base_url = perplexity_url.split('?')[0]
-    if driver.current_url != base_url and not base_url in driver.current_url:
+    if driver.current_url != base_url and base_url not in driver.current_url:
         log_with_timing("Navigating to Perplexity.ai...")
         driver.get(base_url)
     
@@ -461,14 +459,6 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
         time.sleep(1)
         
         # Try multiple selectors for submit button (GO icon)
-        submit_selectors = [
-            "button[data-testid='submit-button']",
-            "button[aria-label='Submit']",
-            "button[type='submit']",
-            "button svg[class*='send']",
-            "button svg[class*='arrow']",
-            "button:has(svg)",
-        ]
         
         # Wait for submit button to be ready (should appear after text is entered)
         submit_timeout = 10
@@ -585,8 +575,6 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
                 # Check for BOTH completion indicators
                 submit_button_disabled = False
                 copy_button_available = False
-                submit_button_found = False
-                copy_button_found = False
                 
                 # Check 1: Submit button with disabled attribute
                 try:
@@ -594,7 +582,6 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
                         By.CSS_SELECTOR,
                         "button[data-testid='submit-button']"
                     )
-                    submit_button_found = True
                     disabled_attr = submit_button.get_attribute("disabled")
                     if disabled_attr is not None and disabled_attr != "false":
                         submit_button_disabled = True
@@ -610,7 +597,6 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
                         By.CSS_SELECTOR,
                         "button[aria-label='Copy']"
                     )
-                    copy_button_found = True
                     if copy_button.is_displayed():
                         copy_button_available = True
                     if debug:
@@ -1060,7 +1046,7 @@ def ask_in_session(question, session_url, model=None, reasoning=None, config=Non
             followup_input.clear()
             followup_input.send_keys(question)
         
-        log_with_timing(f"✓ Question entered")
+        log_with_timing("✓ Question entered")
         
         # Find and click submit button - optimized (no polling, direct find)
         log_with_timing("Finding submit button...")

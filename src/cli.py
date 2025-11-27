@@ -276,12 +276,19 @@ Examples:
         if not answer.lower().startswith("y"):
             return 1
 
-        ok, payload = run_health_check(server_url)
+        ok, payload, status_code = run_health_check(server_url)
+        if payload:
+            print(json.dumps(payload, indent=2))
         if ok:
             print("Health check OK, but /ask failed. Check server logs.", file=sys.stderr)
             return 1
 
-        print("Health check failed or server not responding.", file=sys.stderr)
+        reason = "unknown issue"
+        if isinstance(payload, dict):
+            reason = payload.get("message") or payload.get("error") or str(payload)
+        print(f"Health check failed or server not responding ({reason}).", file=sys.stderr)
+        if status_code:
+            print(f"HTTP status: {status_code}", file=sys.stderr)
         maybe_run_restart()
         return 1
     except requests.exceptions.HTTPError as e:

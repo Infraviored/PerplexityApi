@@ -8,7 +8,6 @@ import re
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
 from typing import Optional
 
 from .perplexity import ask_plexi, ask_in_session, close_browser
@@ -383,7 +382,7 @@ def start_server(host: str = 'localhost', port: int = 8000):
                 # Navigate to main Perplexity page and wait for input to be ready
                 perplexity_url = _config.get('browser', 'perplexity_url')
                 base_url = perplexity_url.split('?')[0]  # Remove query params
-                if driver.current_url != base_url and not base_url in driver.current_url:
+                if driver.current_url != base_url and base_url not in driver.current_url:
                     logger.info(f"Navigating to main page: {base_url}")
                     driver.get(base_url)
                 
@@ -392,11 +391,10 @@ def start_server(host: str = 'localhost', port: int = 8000):
                 from selenium.webdriver.common.by import By
                 from selenium.webdriver.support.ui import WebDriverWait
                 from selenium.webdriver.support import expected_conditions as EC
-                import time
                 
                 wait = WebDriverWait(driver, 30)
                 try:
-                    question_input = wait.until(
+                    wait.until(
                         EC.presence_of_element_located((By.CSS_SELECTOR, "p[dir='auto']"))
                     )
                     wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "p[dir='auto']")))
@@ -420,7 +418,6 @@ def start_server(host: str = 'localhost', port: int = 8000):
     
     # Wait up to 30 seconds for browser to be ready (or until ready)
     logger.info("Waiting for browser to initialize (max 30s)...")
-    import time
     start_wait = time.time()
     max_wait = 30
     while time.time() - start_wait < max_wait:
