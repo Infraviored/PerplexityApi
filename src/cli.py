@@ -241,7 +241,11 @@ Examples:
 
     if args.manual_login:
         try:
-            from manual_login import main as manual_login_main
+            from .manual_login import main as manual_login_main
+        except ImportError:
+            print("Manual login module not available inside package.", file=sys.stderr)
+            return 1
+        try:
             manual_login_main()
             return 0
         except SystemExit as exc:
