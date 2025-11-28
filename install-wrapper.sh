@@ -101,6 +101,11 @@ if [ "$METHOD" = "1" ]; then
     echo ""
     echo "Or open a new terminal and use:"
     echo "  askplexi \"your question\""
+    echo ""
+    echo "Session management:"
+    echo "  askplexi \"question\"              # Creates a new session"
+    echo "  askplexi \"question\" --continue  # Continues last session"
+    echo "  askplexi \"question\" --id SESSION_ID  # Continues specific session"
     
 elif [ "$METHOD" = "2" ]; then
     # Option 2: Create symlink in ~/.local/bin
@@ -140,6 +145,11 @@ elif [ "$METHOD" = "2" ]; then
     echo ""
     echo "You can now use askplexi from anywhere:"
     echo "  askplexi \"your question\""
+    echo ""
+    echo "Session management:"
+    echo "  askplexi \"question\"              # Creates a new session"
+    echo "  askplexi \"question\" --continue  # Continues last session"
+    echo "  askplexi \"question\" --id SESSION_ID  # Continues specific session"
     
 else
     echo -e "${RED}Invalid option. Installation cancelled.${NC}"
