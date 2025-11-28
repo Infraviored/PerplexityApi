@@ -8,6 +8,7 @@ import glob
 import shutil
 import tempfile
 import subprocess
+import signal
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -278,8 +279,11 @@ class BrowserManager:
                 return self.driver
             except Exception as e:
                 message = str(e).lower()
-                if "user data directory is already in use" in message and not use_ephemeral:
-                    logging.warning("User data dir appears locked/in use. Attempting to clear stale Chromium 'Singleton*' locks and retry...")
+                lock_related_error = "user data directory is already in use" in message
+                chrome_unreachable_error = "cannot connect to chrome" in message or "chrome not reachable" in message
+                if (lock_related_error or chrome_unreachable_error) and not use_ephemeral:
+                    logging.warning("Chrome launch failed (%s). Forcing profile cleanup and retrying...", message.splitlines()[0])
+                    self._kill_profile_chrome_processes(user_data_dir)
                     self._clear_profile_singleton_locks(user_data_dir)
                     time.sleep(1)
                     return _launch()
@@ -935,3 +939,38 @@ class BrowserManager:
                 logging.info(f"Removed {removed} stale 'Singleton*' lock files from profile dir {user_data_dir}")
         except Exception as e:
             logging.warning(f"Failed to clear profile locks in {user_data_dir}: {e}")
+
+    def _kill_profile_chrome_processes(self, user_data_dir):
+        """Terminate lingering Chrome processes that are still using the profile dir."""
+        if not user_data_dir:
+            return
+        proc_dir = "/proc"
+        if not os.path.isdir(proc_dir):
+            return
+        killed = 0
+        for entry in os.listdir(proc_dir):
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            cmdline_path = os.path.join(proc_dir, entry, "cmdline")
+            try:
+                with open(cmdline_path, "rb") as fh:
+                    cmdline = fh.read().decode(errors="ignore")
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                continue
+            if not cmdline:
+                continue
+            lc_cmd = cmdline.lower()
+            if "chrome" not in lc_cmd:
+                continue
+            if user_data_dir not in cmdline:
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+                killed += 1
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                logging.debug(f"No permission to terminate Chrome PID {pid}")
+        if killed:
+            logging.info(f"Terminated {killed} stale Chrome process(es) using profile {user_data_dir}")

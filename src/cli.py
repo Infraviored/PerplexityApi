@@ -7,7 +7,7 @@ import argparse
 import json
 import os
 import sys
-from typing import Tuple
+from typing import Tuple, Optional
 
 import requests
 
@@ -19,7 +19,6 @@ def get_server_url() -> str:
 
 def call_server(
     question: str,
-    new_session: bool = False,
     session_id: str | None = None,
     return_sources: bool = False,
     timeout: int = 300,
@@ -36,11 +35,8 @@ def call_server(
         "return_sources": return_sources,
     }
 
-    if new_session:
-        payload["new_session"] = True
-    elif session_id:
-        # For now, we don't thread session IDs through the API; treat as new session.
-        payload["new_session"] = True
+    if session_id:
+        payload["session_id"] = session_id
 
     response = requests.post(
         f"{server_url}/ask",
@@ -111,6 +107,36 @@ def find_sessions_file() -> str:
     return os.path.join(config_dir, "sessions.json")
 
 
+def cli_state_file() -> str:
+    """Return CLI state file path."""
+    return os.path.join(get_xdg_config_dir(), "cli-state.json")
+
+
+def load_last_session_id() -> Optional[str]:
+    """Read last session id tracked by CLI."""
+    state_path = cli_state_file()
+    try:
+        with open(state_path, "r") as f:
+            data = json.load(f)
+        return data.get("last_session_id")
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def save_last_session_id(session_id: str | None) -> None:
+    """Persist last session id for CLI convenience."""
+    if not session_id:
+        return
+    state_path = cli_state_file()
+    try:
+        with open(state_path, "w") as f:
+            json.dump({"last_session_id": session_id}, f, indent=2)
+    except Exception:
+        pass
+
+
 def list_sessions() -> int:
     """List all sessions from sessions.json."""
     sessions_file = find_sessions_file()
@@ -172,8 +198,8 @@ def main(argv: list[str] | None = None) -> int:
         epilog="""
 Examples:
   askplexi "What is 2+2?"
-  askplexi "What is 2+2?" --new
   askplexi "What is 2+2?" --id "session-id-123"
+  askplexi "What is 2+2?" --continue
   askplexi --sessions
 """,
     )
@@ -184,14 +210,15 @@ Examples:
         help="The question to ask",
     )
     parser.add_argument(
-        "--new",
-        action="store_true",
-        help="Create a new session",
-    )
-    parser.add_argument(
         "--id",
         metavar="SESSION_ID",
-        help="Use specific session ID (currently treated as new session)",
+        help="Continue using specific session ID",
+    )
+    parser.add_argument(
+        "--continue",
+        dest="continue_session",
+        action="store_true",
+        help="Continue in the last session returned by askplexi",
     )
     parser.add_argument(
         "--return-sources",
@@ -251,6 +278,23 @@ Examples:
         except SystemExit as exc:
             return exc.code or 0
 
+    if args.id and args.continue_session:
+        parser.error("Cannot specify --id and --continue together.")
+
+    # Determine session override
+    # If neither --id nor --continue is specified, session_id will be None (new session)
+    session_override: str | None = None
+    if args.id:
+        session_override = args.id
+    elif args.continue_session:
+        session_override = load_last_session_id()
+        if not session_override:
+            print(
+                "No previous session id recorded. Ask a question without --continue first.",
+                file=sys.stderr,
+            )
+            return 1
+
     # Get question from argument or stdin
     if args.question:
         question = args.question
@@ -263,10 +307,17 @@ Examples:
     try:
         response_text, session_id = call_server(
             question,
-            new_session=args.new,
-            session_id=args.id,
+            session_id=session_override,
             return_sources=args.return_sources,
         )
+        save_last_session_id(session_id)
+
+        # Output session information for clarity
+        if session_id and session_override:
+            print(f"session id: {session_id}\n")
+        elif session_id:
+            print(f"new session id: {session_id}\n")
+
         print(response_text)
         if os.environ.get("PERPLEXITY_DEBUG") and session_id:
             print(f"\n[Session ID: {session_id}]", file=sys.stderr)

@@ -717,13 +717,13 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
         # Method 1: Navigator Clipboard API (new method, headless-compatible)
         try:
             copy_button = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((
+                EC.presence_of_element_located((
                     By.CSS_SELECTOR,
                     "button[aria-label='Copy']"
                 ))
             )
-            copy_button.click()
-            time.sleep(0.2)  # Brief wait for clipboard to update
+            # Use JavaScript click to bypass element interception
+            driver.execute_script("arguments[0].click();", copy_button)
             
             # Use Navigator Clipboard API
             clipboard_text = driver.execute_async_script("""
@@ -874,13 +874,13 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
             try:
                 # Click copy button again (in case it wasn't clicked before)
                 copy_button = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((
+                    EC.presence_of_element_located((
                         By.CSS_SELECTOR,
                         "button[aria-label='Copy']"
                     ))
                 )
-                copy_button.click()
-                time.sleep(0.5)  # Wait for clipboard to update
+                # Use JavaScript click to bypass element interception
+                driver.execute_script("arguments[0].click();", copy_button)
                 pyperclip_text = pyperclip.paste()
                 
                 if pyperclip_text and len(pyperclip_text.strip()) >= 10 and pyperclip_text.strip() != question.strip():
@@ -1130,8 +1130,8 @@ def ask_in_session(question, session_url, model=None, reasoning=None, config=Non
         
         # Use the bottom-most copy button
         copy_button = copy_buttons[-1]
-        copy_button.click()
-        time.sleep(0.2)
+        # Use JavaScript click to bypass element interception (input field container can overlay the button)
+        driver.execute_script("arguments[0].click();", copy_button)
         
         # Get clipboard content
         clipboard_text = driver.execute_async_script("""

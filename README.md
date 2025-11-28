@@ -138,11 +138,14 @@ After installing the package (see Installation section above), make `askplexi` a
 ### Usage
 
 ```bash
-# Basic usage
+# Basic usage (creates a new session)
 askplexi "What is 2+2?"
 
-# Create new session
-askplexi "What is 2+2?" --new
+# Continue the most recent session
+askplexi "What is 2+2?" --continue
+
+# Continue in a specific session
+askplexi "What is 2+2?" --id "session-id-123"
 
 # Custom server URL
 askplexi "What is 2+2?" --server "http://localhost:9000"
@@ -156,6 +159,8 @@ echo "What is 2+2?" | askplexi
 ```
 
 The CLI wrapper connects to the server via HTTP on `PERPLEXITY_API_URL` (default: `http://localhost:8088`) or the `--server` flag.
+By default, each question creates a new session. When a new session is created, the CLI prints the session id before the answer
+and stores it automatically so that `--continue` can reuse it later.
 
 ## File Locations
 

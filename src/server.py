@@ -253,8 +253,11 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
                 self._send_error_response(400, "Bad Request", "Missing 'question' field")
                 return
             
-            new_session = request_data.get('new_session', False)
             return_sources = request_data.get('return_sources', False)
+            session_id_override = request_data.get('session_id')
+            if session_id_override and not isinstance(session_id_override, str):
+                self._send_error_response(400, "Bad Request", "'session_id' must be a string")
+                return
             
             # Initialize session manager if needed
             if _session_manager is None:
@@ -265,8 +268,31 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
                 _config = load_config()
             
             # Process request
-            if new_session:
-                # Create new session
+            # If session_id is provided, continue in that session
+            # Otherwise, create a new session
+            if session_id_override:
+                # Continue in specified session
+                session_url = _session_manager.get_session_url(session_id_override)
+                if session_url:
+                    logger.info(f"Continuing in session {session_id_override} for question: {question[:50]}...")
+                    _set_status(f"Processing question (session {session_id_override[:8]})")
+                    response_text, session_id, final_url = ask_in_session(
+                        question,
+                        session_url,
+                        config=_config,
+                        debug=False
+                    )
+                    session_id = session_id or session_id_override
+                    _session_manager.update_session_usage(session_id_override)
+                else:
+                    self._send_error_response(
+                        404,
+                        "Session Not Found",
+                        f"Requested session '{session_id_override}' is unknown on the server",
+                    )
+                    return
+            else:
+                # Create new session (default behavior)
                 logger.info(f"Creating new session for question: {question[:50]}...")
                 _set_status("Processing question (new session)")
                 response_text, session_id, final_url = ask_plexi(
@@ -278,46 +304,6 @@ class PerplexityAPIHandler(BaseHTTPRequestHandler):
                 
                 if session_id and final_url:
                     _session_manager.create_session(session_id, final_url)
-            else:
-                # Continue in existing session
-                current_session_id = _session_manager.get_current_session()
-                
-                if current_session_id:
-                    session_url = _session_manager.get_session_url(current_session_id)
-                    if session_url:
-                        logger.info(f"Continuing in session {current_session_id} for question: {question[:50]}...")
-                        _set_status(f"Processing question (session {current_session_id[:8]})")
-                        response_text, session_id, final_url = ask_in_session(
-                            question,
-                            session_url,
-                            config=_config,
-                            debug=False
-                        )
-                        _session_manager.update_session_usage(current_session_id)
-                    else:
-                        # Session URL not found, create new session
-                        logger.info(f"Session URL not found, creating new session for question: {question[:50]}...")
-                        _set_status("Processing question (session URL missing – new session)")
-                        response_text, session_id, final_url = ask_plexi(
-                            question,
-                            config=_config,
-                            debug=False,
-                            headless=True
-                        )
-                        if session_id and final_url:
-                            _session_manager.create_session(session_id, final_url)
-                else:
-                    # No current session, create new one
-                    logger.info(f"No current session, creating new session for question: {question[:50]}...")
-                    _set_status("Processing question (no active session)")
-                    response_text, session_id, final_url = ask_plexi(
-                        question,
-                        config=_config,
-                        debug=False,
-                        headless=True
-                    )
-                    if session_id and final_url:
-                        _session_manager.create_session(session_id, final_url)
             
             # Clean response text (remove citations and URLs unless return_sources is True)
             cleaned_response = clean_response_text(response_text, include_sources=return_sources)
