@@ -264,11 +264,19 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
         log_with_timing("Checking login status...")
         _ensure_logged_in(config)
     
-    # Navigate to Perplexity.ai if not already there
+    # Navigate to Perplexity.ai main page (force new session)
     perplexity_url = config.get('browser', 'perplexity_url')
     base_url = perplexity_url.split('?')[0]
-    if driver.current_url != base_url and base_url not in driver.current_url:
-        log_with_timing("Navigating to Perplexity.ai...")
+    current_url = driver.current_url
+    
+    # Parse current URL to check path (ignore query parameters)
+    from urllib.parse import urlparse
+    parsed = urlparse(current_url)
+    current_path = parsed.path  # e.g., "/search/..." or "/" or ""
+    
+    # Only navigate if path is not "/" or empty (query params are fine)
+    if current_path and current_path != "/":
+        log_with_timing("Navigating to Perplexity.ai main page (new session)...")
         driver.get(base_url)
     
     element_wait_timeout = config.get('perplexity', 'element_wait_timeout') or 30
@@ -716,12 +724,29 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
         
         # Method 1: Navigator Clipboard API (new method, headless-compatible)
         try:
-            copy_button = WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((
-                    By.CSS_SELECTOR,
-                    "button[aria-label='Copy']"
-                ))
-            )
+            # Find all copy buttons and select the bottom-most one
+            copy_buttons = driver.find_elements(By.CSS_SELECTOR, "button[aria-label='Copy']")
+            if not copy_buttons:
+                raise Exception("Copy button not found")
+            
+            # Find the bottom-most copy button by checking Y position
+            visible_buttons = []
+            for btn in copy_buttons:
+                try:
+                    if btn.is_displayed():
+                        y_pos = btn.location['y']
+                        visible_buttons.append((y_pos, btn))
+                except Exception:
+                    continue
+            
+            if not visible_buttons:
+                # Fallback: use the last one in DOM order
+                copy_button = copy_buttons[-1]
+            else:
+                # Sort by Y position (bottom-most has highest Y)
+                visible_buttons.sort(key=lambda x: x[0], reverse=True)
+                copy_button = visible_buttons[0][1]
+            
             # Use JavaScript click to bypass element interception
             driver.execute_script("arguments[0].click();", copy_button)
             
@@ -872,13 +897,29 @@ def ask_plexi(question, model=None, reasoning=None, config=None, debug=False, he
         # Method 4: Old click-to-copy method (fallback using pyperclip)
         if not response_text or len(response_text.strip()) < 10:
             try:
-                # Click copy button again (in case it wasn't clicked before)
-                copy_button = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((
-                        By.CSS_SELECTOR,
-                        "button[aria-label='Copy']"
-                    ))
-                )
+                # Find all copy buttons and select the bottom-most one
+                copy_buttons = driver.find_elements(By.CSS_SELECTOR, "button[aria-label='Copy']")
+                if not copy_buttons:
+                    raise Exception("Copy button not found")
+                
+                # Find the bottom-most copy button by checking Y position
+                visible_buttons = []
+                for btn in copy_buttons:
+                    try:
+                        if btn.is_displayed():
+                            y_pos = btn.location['y']
+                            visible_buttons.append((y_pos, btn))
+                    except Exception:
+                        continue
+                
+                if not visible_buttons:
+                    # Fallback: use the last one in DOM order
+                    copy_button = copy_buttons[-1]
+                else:
+                    # Sort by Y position (bottom-most has highest Y)
+                    visible_buttons.sort(key=lambda x: x[0], reverse=True)
+                    copy_button = visible_buttons[0][1]
+                
                 # Use JavaScript click to bypass element interception
                 driver.execute_script("arguments[0].click();", copy_button)
                 pyperclip_text = pyperclip.paste()
@@ -1128,8 +1169,25 @@ def ask_in_session(question, session_url, model=None, reasoning=None, config=Non
         if not copy_buttons:
             raise Exception("Copy button not found")
         
-        # Use the bottom-most copy button
-        copy_button = copy_buttons[-1]
+        # Find the bottom-most copy button by checking Y position
+        # Get all visible copy buttons with their Y positions
+        visible_buttons = []
+        for btn in copy_buttons:
+            try:
+                if btn.is_displayed():
+                    y_pos = btn.location['y']
+                    visible_buttons.append((y_pos, btn))
+            except Exception:
+                continue
+        
+        if not visible_buttons:
+            # Fallback: use the last one in DOM order
+            copy_button = copy_buttons[-1]
+        else:
+            # Sort by Y position (bottom-most has highest Y)
+            visible_buttons.sort(key=lambda x: x[0], reverse=True)
+            copy_button = visible_buttons[0][1]
+        
         # Use JavaScript click to bypass element interception (input field container can overlay the button)
         driver.execute_script("arguments[0].click();", copy_button)
         
